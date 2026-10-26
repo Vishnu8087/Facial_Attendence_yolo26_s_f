@@ -13,7 +13,7 @@ onnxruntime-gpu==1.20.1
 # --- PyTorch 2.5 with CUDA 12.1 (cu121 wheel) ---
 # Pulled from the pytorch index; constraint added here for reproducibility.
 # Ultralytics YOLO26 (used when DETECTOR_BACKEND=yolo26) requires torch>=2.1.
-torch==2.5.1
+torch==2.14.1
 torchvision==0.20.1
 --extra-index-url https://download.pytorch.org/whl/cu121
 
