@@ -1,0 +1,56 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to release (must already exist in git)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Read CHANGELOG entry for tag
+        id: changelog
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME:-${{ inputs.tag }}}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          # Extract the section matching this version from CHANGELOG.md
+          # Sections look like:  ## [0.1.0] - 2024-01-01
+          VERSION="${TAG#v}"
+          python - <<PY
+          import re, sys, pathlib
+          text = pathlib.Path("CHANGELOG.md").read_text(encoding="utf-8")
+          pattern = re.compile(
+              r"##\s*\[" + re.escape("${VERSION}") + r"\][^\n]*\n(.*?)(?=\n##\s*\[|\Z)",
+              re.S,
+          )
+          m = pattern.search(text)
+          body = m.group(1).strip() if m else "(no changelog entry found)"
+          # Write to GITHUB_ENV via a file to avoid quoting issues.
+          pathlib.Path("/tmp/release_body.md").write_text(body, encoding="utf-8")
+          PY
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.changelog.outputs.tag }}
+          name: Release ${{ steps.changelog.outputs.tag }}
+          body_path: /tmp/release_body.md
+          draft: false
+          prerelease: ${{ contains(steps.changelog.outputs.tag, '-') }}
+          generate_release_notes: true

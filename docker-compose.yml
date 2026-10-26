@@ -1,0 +1,210 @@
+# docker-compose.yml — base stack (used by dev + prod via overrides)
+# Bring up full stack:        docker compose up -d
+# Dev (hot reload):           docker compose -f docker-compose.yml -f docker-compose.override.yml up -d
+# Prod (resource limits):     docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#
+# Base stack only exposes api:8000 and nginx:80 to the host. Use override.yml
+# for dev (exposes db/redis/prometheus/grafana ports) or prod.yml for prod
+# (removes api host port — only nginx 80/443).
+name: facial-attendance
+
+networks:
+  attendance-net:
+    driver: bridge
+    name: attendance-net
+
+volumes:
+  db-data:
+    name: attendance-db-data
+  redis-data:
+    name: attendance-redis-data
+  prometheus-data:
+    name: attendance-prometheus-data
+  grafana-data:
+    name: attendance-grafana-data
+  models-data:
+    name: attendance-models-data
+  app-data:
+    name: attendance-app-data
+  app-logs:
+    name: attendance-app-logs
+
+services:
+  # ----------------------------------------------------------------- API
+  api:
+    build:
+      context: .
+      dockerfile: deploy/docker/Dockerfile.cpu
+    image: facial-attendance/api:latest-cpu
+    container_name: attendance-api
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      - DATABASE_URL=${DATABASE_URL:-postgresql+asyncpg://attendance:changeme@db:5432/attendance}
+      - PYTHONPATH=/app
+      - MODELS_DIR=/app/models
+      - DATA_DIR=/app/data
+      - LOG_DIR=/app/logs
+      - REDIS_URL=redis://redis:6379/0
+      - PROMETHEUS_PORT=8000
+    volumes:
+      - models-data:/app/models
+      - app-data:/app/data
+      - app-logs:/app/logs
+      - ./configs:/app/configs:ro
+    ports:
+      - "8000:8000"
+    expose:
+      - "8000"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 60s
+      retries: 3
+    networks:
+      - attendance-net
+
+  # ----------------------------------------------------------------- Worker
+  worker:
+    build:
+      context: .
+      dockerfile: deploy/docker/Dockerfile.cpu
+    image: facial-attendance/api:latest-cpu
+    container_name: attendance-worker
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      api:
+        condition: service_started
+    command: ["worker"]
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      - DATABASE_URL=${DATABASE_URL:-postgresql+asyncpg://attendance:changeme@db:5432/attendance}
+      - PYTHONPATH=/app
+      - MODELS_DIR=/app/models
+      - DATA_DIR=/app/data
+      - LOG_DIR=/app/logs
+      - REDIS_URL=redis://redis:6379/0
+      - PROMETHEUS_PORT=8001
+    expose:
+      - "8001"
+    volumes:
+      - models-data:/app/models
+      - app-data:/app/data
+      - app-logs:/app/logs
+      - ./configs:/app/configs:ro
+    deploy:
+      replicas: 1
+    networks:
+      - attendance-net
+
+  # ----------------------------------------------------------------- Postgres + pgvector
+  db:
+    image: pgvector/pgvector:pg16
+    container_name: attendance-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-attendance}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+      POSTGRES_DB: ${POSTGRES_DB:-attendance}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - db-data:/var/lib/postgresql/data
+      - ./deploy/docker/init:/docker-entrypoint-initdb.d:ro
+    expose:
+      - "5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-attendance} -d ${POSTGRES_DB:-attendance}"]
+      interval: 10s
+      timeout: 5s
+      start_period: 30s
+      retries: 5
+    networks:
+      - attendance-net
+
+  # ----------------------------------------------------------------- Redis (cooldown cache + pub-sub)
+  redis:
+    image: redis:7-alpine
+    container_name: attendance-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+    volumes:
+      - redis-data:/data
+    expose:
+      - "6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks:
+      - attendance-net
+
+  # ----------------------------------------------------------------- Prometheus
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: attendance-prometheus
+    restart: unless-stopped
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=15d"
+      - "--web.enable-lifecycle"
+      - "--web.console.libraries=/usr/share/prometheus/console_libraries"
+      - "--web.console.templates=/usr/share/prometheus/consoles"
+    volumes:
+      - ./configs/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    expose:
+      - "9090"
+    networks:
+      - attendance-net
+
+  # ----------------------------------------------------------------- Grafana
+  grafana:
+    image: grafana/grafana:latest
+    container_name: attendance-grafana
+    restart: unless-stopped
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_SERVER_ROOT_URL=http://localhost/grafana
+      - GF_SERVER_SERVE_FROM_SUB_PATH=true
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./configs/grafana/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./configs/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./configs/grafana/dashboards/attendance-overview.json:/var/lib/grafana/dashboards/attendance-overview.json:ro
+    expose:
+      - "3000"
+    depends_on:
+      - prometheus
+    networks:
+      - attendance-net
+
+  # ----------------------------------------------------------------- NGINX reverse proxy
+  nginx:
+    image: nginx:alpine
+    container_name: attendance-nginx
+    restart: unless-stopped
+    depends_on:
+      - api
+      - grafana
+    ports:
+      - "80:80"
+    volumes:
+      - ./configs/nginx.conf:/etc/nginx/nginx.conf:ro
+    networks:
+      - attendance-net

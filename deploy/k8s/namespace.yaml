@@ -1,0 +1,11 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: facial-attendance
+  labels:
+    app.kubernetes.io/name: facial-attendance
+    app.kubernetes.io/part-of: facial-attendance-system
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted

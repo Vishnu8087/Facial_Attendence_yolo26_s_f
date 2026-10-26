@@ -1,0 +1,128 @@
+# docker-compose.prod.yml — production overrides
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#
+# Changes vs base:
+#   - GPU image (Dockerfile.gpu) by default
+#   - Resource limits + reservations (GPU device reservation on api/worker)
+#   - json-file logging with rotation
+#   - Removes api host port (ingress via nginx only) — only nginx 80/443 exposed
+#   - Multiple worker replicas
+
+services:
+  api:
+    build:
+      dockerfile: deploy/docker/Dockerfile.gpu
+    image: facial-attendance/api:latest-gpu
+    environment:
+      - LOG_LEVEL=INFO
+      - WORKERS=4
+      - GPU_ENABLED=true
+      - PROMETHEUS_PORT=8000
+    deploy:
+      replicas: 1
+      resources:
+        reservations:
+          cpus: "1.0"
+          memory: 1G
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+        limits:
+          cpus: "2.0"
+          memory: 4G
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+    # Override the base ports list — only expose internally
+    ports: []
+
+  worker:
+    build:
+      dockerfile: deploy/docker/Dockerfile.gpu
+    image: facial-attendance/api:latest-gpu
+    environment:
+      - LOG_LEVEL=INFO
+      - GPU_ENABLED=true
+      - PROMETHEUS_PORT=8001
+    deploy:
+      replicas: 2
+      resources:
+        reservations:
+          cpus: "1.0"
+          memory: 1G
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+        limits:
+          cpus: "2.0"
+          memory: 4G
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  db:
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?must be set}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?must be set}
+      POSTGRES_DB: ${POSTGRES_DB:?must be set}
+    deploy:
+      resources:
+        reservations:
+          cpus: "0.5"
+          memory: 512M
+        limits:
+          cpus: "2.0"
+          memory: 2G
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  redis:
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
+
+  prometheus:
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
+
+  grafana:
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
+
+  nginx:
+    ports:
+      - "80:80"
+      - "443:443"
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 256M
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"

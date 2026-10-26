@@ -1,0 +1,5 @@
+# CPU runtime dependencies.
+# Usage: pip install -r requirements/cpu.txt
+-r base.txt
+
+onnxruntime==1.20.1

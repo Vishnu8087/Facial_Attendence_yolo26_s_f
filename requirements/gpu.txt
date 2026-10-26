@@ -1,0 +1,21 @@
+# GPU runtime dependencies for CUDA 12.1.
+# Use this instead of cpu.txt; do not install both runtime variants together.
+# Usage:
+#   pip install -r requirements/gpu.txt
+#
+# Includes shared dependencies and selects the CUDA-enabled inference runtimes.
+
+-r base.txt
+
+# --- ONNX Runtime CUDA build ---
+onnxruntime-gpu==1.20.1
+
+# --- PyTorch 2.5 with CUDA 12.1 (cu121 wheel) ---
+# Pulled from the pytorch index; constraint added here for reproducibility.
+# Ultralytics YOLO26 (used when DETECTOR_BACKEND=yolo26) requires torch>=2.1.
+torch==2.5.1
+torchvision==0.20.1
+--extra-index-url https://download.pytorch.org/whl/cu121
+
+# OpenCV uses the standard CPU wheel required by Ultralytics. GPU inference is
+# provided by PyTorch and ONNX Runtime; OpenCV itself is not CUDA-enabled here.

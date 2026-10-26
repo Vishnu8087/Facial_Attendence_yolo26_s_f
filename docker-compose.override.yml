@@ -1,0 +1,59 @@
+# docker-compose.override.yml — local dev overrides
+# Auto-applied by `docker compose up` (no -f needed).
+#
+# Changes vs base:
+#   - Hot reload via bind mount of ./app
+#   - Uvicorn --reload (after the entrypoint applies DB migrations)
+#   - Expose DB + Redis + Prometheus + Grafana ports to host for debugging
+#   - Debug log level
+#   - CPU image only
+
+services:
+  api:
+    build:
+      dockerfile: deploy/docker/Dockerfile.cpu
+      args:
+        BUILD_ENV: dev
+    image: facial-attendance/api:dev-cpu
+    environment:
+      - LOG_LEVEL=DEBUG
+      - RELOAD=true
+      - WORKERS=1
+      - DOWNLOAD_MODELS=false
+    volumes:
+      - ./app:/app/app:cached
+      - ./configs:/app/configs:ro
+      - models-data:/app/models
+      - app-data:/app/data
+      - app-logs:/app/logs
+
+  worker:
+    build:
+      dockerfile: deploy/docker/Dockerfile.cpu
+    image: facial-attendance/api:dev-cpu
+    environment:
+      - LOG_LEVEL=DEBUG
+    volumes:
+      - ./app:/app/app:cached
+      - ./configs:/app/configs:ro
+      - models-data:/app/models
+      - app-data:/app/data
+      - app-logs:/app/logs
+    entrypoint: []
+    command: ["python", "-m", "app.worker"]
+
+  db:
+    ports:
+      - "5432:5432"
+
+  redis:
+    ports:
+      - "6379:6379"
+
+  prometheus:
+    ports:
+      - "9090:9090"
+
+  grafana:
+    ports:
+      - "3000:3000"

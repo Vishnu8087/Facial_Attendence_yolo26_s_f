@@ -1,0 +1,523 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#0a0e1a" />
+  <title>FaceTrack — Attendance System</title>
+  <meta name="description" content="Production-grade facial attendance and motion tracking dashboard." />
+  <link rel="icon" type="image/svg+xml" href="assets/favicon.svg" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="css/styles.css?v=20261023-admin-access" />
+</head>
+<body data-page="live">
+  <div class="app">
+
+    <!-- ============================ NAVBAR ============================ -->
+    <header class="navbar" role="banner">
+      <div class="navbar__brand">
+        <img src="assets/logo.svg" alt="FaceTrack logo" />
+        <div class="navbar__brand-text">
+          <span class="navbar__brand-title">FaceTrack</span>
+          <span class="navbar__brand-sub">Attendance &amp; Motion Tracking</span>
+        </div>
+      </div>
+      <div class="navbar__actions">
+        <button id="btnAdminAccess" class="btn btn--sm" type="button">Admin Access</button>
+        <span id="strategyBadge" class="badge badge--strat" title="Current strategy mode">Strategy: Both</span>
+        <span id="connStatus" class="status-pill disconnected" role="status" aria-live="polite">
+          <span class="dot" aria-hidden="true"></span>
+          <span class="text">Disconnected</span>
+        </span>
+      </div>
+    </header>
+
+    <nav class="tabs page-nav" role="tablist" aria-label="Main navigation">
+      <button class="tab" role="tab" id="tab-live" aria-selected="true" aria-controls="panel-live">Live</button>
+      <button class="tab" role="tab" id="tab-log" aria-selected="false" aria-controls="panel-log">Attendance Log</button>
+      <button class="tab" role="tab" id="tab-emp" aria-selected="false" aria-controls="panel-emp">People</button>
+      <button class="tab" role="tab" id="tab-config" aria-selected="false" aria-controls="panel-config">Config</button>
+    </nav>
+
+    <!-- ============================ MAIN ============================ -->
+    <main class="main">
+
+      <!-- ===================== SIDEBAR ===================== -->
+      <aside class="sidebar" aria-label="Configuration controls">
+
+        <!-- Input source toggle -->
+        <section class="card card--tight">
+          <div class="card__body">
+            <div class="section-label">Input Source</div>
+            <div class="segmented" role="group" aria-label="Input source">
+              <button class="segmented__btn" id="srcCamera" role="button" aria-pressed="true"
+                      data-tooltip="Use your webcam via getUserMedia. Frames are streamed live to the backend.">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                  <path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2"/>
+                </svg>
+                <span>Live Camera</span>
+              </button>
+              <button class="segmented__btn" id="srcUpload" role="button" aria-pressed="false"
+                      data-tooltip="Upload a video file. Frames are extracted in real time and streamed to the backend.">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                  <polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
+                </svg>
+                <span>Upload Video</span>
+              </button>
+              <button class="segmented__btn" id="srcCctv" role="button" aria-pressed="false"
+                      data-tooltip="Connect to a CCTV / RTSP camera by URL. Stream is read server-side via OpenCV.">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                  <path d="M2 7h20v10H2z"/><circle cx="6" cy="12" r="2"/><path d="M12 8v8M16 8v8M20 8v8"/>
+                </svg>
+                <span>CCTV / RTSP</span>
+              </button>
+            </div>
+
+            <!-- Camera controls -->
+            <div id="cameraControls" class="mt-3">
+              <div class="row row--between">
+                <select id="deviceSelect" class="select" aria-label="Select camera device" style="flex:1;">
+                  <option value="">Default camera</option>
+                </select>
+                <button id="btnCamera" class="btn btn--primary btn--sm" aria-label="Start or stop camera">
+                  <span class="btn-text">Start Camera</span>
+                </button>
+              </div>
+              <p class="field__hint mt-2" id="cameraHint">Click "Start Camera" to grant webcam access.</p>
+            </div>
+
+            <!-- CCTV / RTSP controls -->
+            <div id="cctvControls" class="mt-3 hidden">
+              <div class="field mb-2">
+                <label class="field__label" for="cctvId">Camera ID <span style="color:var(--muted)">(required)</span></label>
+                <input id="cctvId" type="text" class="input" placeholder="e.g. cam_entrance_1" value="cam_001" />
+              </div>
+              <div class="field mb-2">
+                <label class="field__label" for="cctvName">Camera Name <span style="color:var(--muted)">(required)</span></label>
+                <input id="cctvName" type="text" class="input" placeholder="e.g. Main Entrance" value="Main Entrance" />
+              </div>
+              <div class="field mb-2">
+                <label class="field__label" for="cctvUrl">Stream URL <span style="color:var(--muted)">(required)</span></label>
+                <input id="cctvUrl" type="text" class="input" placeholder="rtsp://192.168.1.100:554/stream" value="" />
+                <span class="field__hint">RTSP, HTTP-MJPEG, or any OpenCV-readable URL</span>
+              </div>
+              <div class="row mb-2">
+                <div class="field" style="flex:1;">
+                  <label class="field__label" for="cctvUser">Username <span style="color:var(--muted)">(optional)</span></label>
+                  <input id="cctvUser" type="text" class="input" placeholder="admin" value="" />
+                </div>
+                <div class="field" style="flex:1; margin-left: 8px;">
+                  <label class="field__label" for="cctvPass">Password <span style="color:var(--muted)">(optional)</span></label>
+                  <input id="cctvPass" type="password" class="input" placeholder="••••••••" value="" />
+                </div>
+              </div>
+              <button id="btnCctvConnect" class="btn btn--primary btn--block" aria-label="Connect to CCTV camera">
+                <span class="btn-text">Connect CCTV Camera</span>
+              </button>
+              <p class="field__hint mt-2" id="cctvHint">Enter camera details and click Connect. The backend reads the stream server-side via OpenCV.</p>
+            </div>
+
+            <!-- Upload controls -->
+            <div id="uploadFileControls" class="mt-3 hidden">
+              <label class="btn btn--block btn--sm" for="fileInput">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                  <polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
+                </svg>
+                <span>Choose video file…</span>
+              </label>
+              <input id="fileInput" type="file" accept="video/*" class="hidden" aria-label="Choose a video file" />
+              <p class="field__hint mt-2" id="uploadHint">Select an MP4/WebM/MOV video to stream frames.</p>
+            </div>
+          </div>
+        </section>
+
+        <!-- Strategy toggle -->
+        <section class="card card--tight">
+          <div class="card__body">
+            <div class="section-label">Strategy Mode</div>
+            <div class="segmented" role="group" aria-label="Strategy mode" id="strategySegmented">
+              <button class="segmented__btn" data-strategy="both" role="button" aria-pressed="true"
+                      data-tooltip="Full pipeline: detect → embed → track → liveness → match → log attendance. Recommended.">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                  <path d="M12 2l3 7h7l-5.5 4 2 7L12 16l-6.5 4 2-7L2 9h7z"/>
+                </svg>
+                <span>Both</span>
+              </button>
+              <button class="segmented__btn" data-strategy="detection_only" role="button" aria-pressed="false"
+                      data-tooltip="Strategy 1: Detection + Embedding only. Re-detect every frame and match against DB immediately. Skips tracker and liveness.">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                  <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+                </svg>
+                <span>Strategy 1</span>
+              </button>
+              <button class="segmented__btn" data-strategy="tracking_only" role="button" aria-pressed="false"
+                      data-tooltip="Strategy 2: Tracking + Liveness only. Track faces across frames and run anti-spoof. Skips identity extraction; does NOT log attendance.">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                  <path d="M3 12h4l3-9 4 18 3-9h4"/>
+                </svg>
+                <span>Strategy 2</span>
+              </button>
+            </div>
+            <p class="field__hint mt-2" id="strategyHint">Both — full pipeline (detect → embed → track → liveness → match → log).</p>
+          </div>
+        </section>
+
+        <!-- Detector model selector -->
+        <section class="card card--tight">
+          <div class="card__body">
+            <div class="section-label">Detector Model</div>
+            <div class="field mb-2">
+              <div class="row row--between">
+                <label class="field__label" for="detectorSelect">Backend</label>
+                <span class="badge badge--sim text-mono" id="detectorBadge">yolo26/yolo26s-face.pt</span>
+              </div>
+              <select id="detectorSelect" class="select" aria-label="Select face detector model">
+                <optgroup label="Ultralytics YOLO26 (NMS-free, Jan 2026) — RECOMMENDED">
+                  <option value="yolo26:yolo26s-face.pt" data-backend="yolo26" data-model="yolo26s-face.pt" selected>YOLO26s-face — small (19 MB, mAP 81% — DEFAULT)</option>
+                  <option value="yolo26:yolo26n-face.pt" data-backend="yolo26" data-model="yolo26n-face.pt">YOLO26n-face — nano (5 MB, fastest CPU)</option>
+                </optgroup>
+                <optgroup label="Ultralytics YOLOv11">
+                  <option value="yolo26:yolov11n-face.pt" data-backend="yolo26" data-model="yolov11n-face.pt">YOLOv11n-face — nano (5 MB, fastest 16 FPS)</option>
+                </optgroup>
+                <optgroup label="Ultralytics YOLOv8">
+                  <option value="yolo26:yolov8s-face.pt" data-backend="yolo26" data-model="yolov8s-face.pt">YOLOv8s-face — small (22 MB)</option>
+                </optgroup>
+                <optgroup label="InsightFace RetinaFace (anchor-based, multi-task)">
+                  <option value="insightface:buffalo_l" data-backend="insightface" data-model="buffalo_l">RetinaFace — buffalo_l (288 MB, 96% precision on GPU)</option>
+                  <option value="insightface:buffalo_s" data-backend="insightface" data-model="buffalo_s">RetinaFace — buffalo_s (16 MB, smaller)</option>
+                </optgroup>
+                <optgroup label="InsightFace SCRFD (Ultra-fast face detector)">
+                  <option value="insightface:scrfd_500m" data-backend="insightface" data-model="scrfd_500m">SCRFD-500M (2.5 MB, fastest — 52 FPS)</option>
+                </optgroup>
+              </select>
+              <span class="field__hint">Live-switch detector. YOLO26 = faster CPU; RetinaFace = higher precision on GPU. ArcFace embeddings stay detector-agnostic.</span>
+            </div>
+            <div class="row row--between text-mono" style="font-size: 11px; color: var(--muted);">
+              <span id="detectorStats">—</span>
+              <span id="detectorSwitchTime">—</span>
+            </div>
+          </div>
+        </section>
+
+        <!-- Stream controls -->
+        <section class="card card--tight">
+          <div class="card__body">
+            <div class="section-label">Stream &amp; Detection</div>
+
+            <div class="field mb-3">
+              <div class="row row--between">
+                <label class="field__label" for="thresholdSlider">Similarity Threshold</label>
+                <span class="badge badge--sim text-mono" id="thresholdValue">0.30</span>
+              </div>
+              <input id="thresholdSlider" type="range" min="0.20" max="0.90" step="0.01" value="0.30" aria-label="Similarity threshold for matching" />
+              <span class="field__hint">Faces with cosine similarity ≥ threshold are matched to enrolled employees. Default 0.30 — LFW benchmark showed 0% FAR + 99.33% accuracy.</span>
+            </div>
+
+            <label class="toggle" for="livenessToggle">
+              <input type="checkbox" id="livenessToggle" class="toggle__input" checked />
+              <span class="toggle__track" aria-hidden="true"></span>
+              <span class="toggle__label">Enable Liveness (anti-spoof)</span>
+            </label>
+          </div>
+        </section>
+
+      </aside>
+
+      <!-- ===================== CONTENT ===================== -->
+      <section class="content">
+
+        <!-- Stats cards -->
+        <div class="stats-grid" role="region" aria-label="Live statistics">
+          <div class="stat-card" data-kind="fps">
+            <div class="stat-card__accent" aria-hidden="true"></div>
+            <div class="stat-card__label">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+              FPS
+            </div>
+            <div class="stat-card__value" id="statFps">0</div>
+            <div class="stat-card__sub">backend processing rate</div>
+          </div>
+          <div class="stat-card" data-kind="faces">
+            <div class="stat-card__accent" aria-hidden="true"></div>
+            <div class="stat-card__label">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/></svg>
+              Faces Detected
+            </div>
+            <div class="stat-card__value" id="statFaces">0</div>
+            <div class="stat-card__sub">last frame / cumulative</div>
+          </div>
+          <div class="stat-card" data-kind="recog">
+            <div class="stat-card__accent" aria-hidden="true"></div>
+            <div class="stat-card__label">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M20 6L9 17l-5-5"/></svg>
+              Recognized
+            </div>
+            <div class="stat-card__value" id="statRecog">0</div>
+            <div class="stat-card__sub">identities matched</div>
+          </div>
+          <div class="stat-card" data-kind="spoof">
+            <div class="stat-card__accent" aria-hidden="true"></div>
+            <div class="stat-card__label">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 9v4M12 17h.01"/><circle cx="12" cy="12" r="10"/></svg>
+              Spoof Rejected
+            </div>
+            <div class="stat-card__value" id="statSpoof">0</div>
+            <div class="stat-card__sub">liveness failures</div>
+          </div>
+        </div>
+
+        <!-- Live feed panel -->
+        <div class="tab-panel active" id="panel-live" role="tabpanel" aria-labelledby="tab-live">
+          <section class="card live-preview">
+            <div class="card__header">
+              <h2 class="card__title">Live Video Preview</h2>
+              <span id="videoStatus" class="video-status-badge idle">
+                <span class="dot" aria-hidden="true"></span>
+                <span class="text">Idle</span>
+              </span>
+            </div>
+            <div class="card__body">
+              <div class="video-wrap" id="videoWrap">
+                <video id="videoEl" playsinline muted aria-label="Live video preview"></video>
+                <img id="annotatedOverlay" class="overlay hidden" alt="Annotated frame from backend" />
+                <div class="video-wrap__placeholder" id="videoPlaceholder">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">
+                    <path d="M23 7l-7 5 7 5V7z" />
+                    <rect x="1" y="5" width="15" height="14" rx="2" ry="2" />
+                  </svg>
+                  <p>Select an input source in Config and start the stream.</p>
+                </div>
+                <canvas id="captureCanvas" width="640" height="480" class="hidden" aria-hidden="true"></canvas>
+              </div>
+              <div id="uploadControls" class="video-controls hidden">
+                <button id="btnPlayPause" class="btn btn--sm" aria-label="Play or pause uploaded video">
+                  <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>
+                </button>
+                <input id="seekBar" type="range" min="0" max="100" step="0.1" value="0" aria-label="Seek video position" />
+                <span id="timeDisplay" class="time">0:00 / 0:00</span>
+              </div>
+              <div class="row mt-3">
+                <button id="btnStartStream" class="btn btn--success" aria-label="Start streaming frames to backend">
+                  <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+                  <span>Start Stream</span>
+                </button>
+                <button id="btnStopStream" class="btn btn--danger hidden" aria-label="Stop streaming">
+                  <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="5" y="5" width="14" height="14" rx="1"/></svg>
+                  <span>Stop Stream</span>
+                </button>
+              </div>
+            </div>
+          </section>
+          <div class="card flex-1">
+            <div class="card__header">
+              <h2 class="card__title">Live Attendance Feed</h2>
+              <button id="btnClearFeed" class="btn btn--ghost btn--sm">Clear</button>
+            </div>
+            <div class="card__body" style="overflow:auto;">
+              <ul id="feedList" class="feed" aria-live="polite"></ul>
+            </div>
+          </div>
+        </div>
+
+        <!-- Attendance log panel -->
+        <div class="tab-panel" id="panel-log" role="tabpanel" aria-labelledby="tab-log">
+          <div class="card flex-1">
+            <div class="card__body" style="display:flex; flex-direction:column; flex:1; min-height:0;">
+              <div class="toolbar">
+                <label class="field">
+                  <span class="field__label">From</span>
+                  <input type="date" id="filterFrom" class="input" />
+                </label>
+                <label class="field">
+                  <span class="field__label">To</span>
+                  <input type="date" id="filterTo" class="input" />
+                </label>
+                <label class="field">
+                  <span class="field__label">Employee</span>
+                  <input type="text" id="filterEmployee" class="input" placeholder="Name or ID" />
+                </label>
+                <button id="btnApplyFilters" class="btn btn--primary btn--sm">Apply</button>
+                <button id="btnResetFilters" class="btn btn--ghost btn--sm">Reset</button>
+                <span class="spacer"></span>
+                <button id="btnExportCsv" class="btn btn--sm" aria-label="Export filtered attendance as CSV">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                  Export CSV
+                </button>
+              </div>
+
+              <div class="table-wrap">
+                <table class="data" aria-label="Attendance log">
+                  <thead>
+                    <tr>
+                      <th>Time</th>
+                      <th>Employee</th>
+                      <th>ID</th>
+                      <th>Department</th>
+                      <th>Similarity</th>
+                      <th>Track</th>
+                      <th>Liveness</th>
+                      <th>Strategy</th>
+                    </tr>
+                  </thead>
+                  <tbody id="logBody"></tbody>
+                </table>
+                <div id="logEmpty" class="table-empty">No attendance records. Apply filters and click "Apply" to load.</div>
+              </div>
+
+              <div class="pagination">
+                <span class="pagination__info" id="logPageInfo">—</span>
+                <button id="btnPrevPage" class="btn btn--ghost btn--sm" disabled>Prev</button>
+                <button id="btnNextPage" class="btn btn--ghost btn--sm" disabled>Next</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Employees panel -->
+        <div class="tab-panel" id="panel-emp" role="tabpanel" aria-labelledby="tab-emp">
+          <div class="enroll-grid">
+            <div class="card">
+              <div class="card__header">
+                <h2 class="card__title">Enroll Employee</h2>
+              </div>
+              <div class="card__body">
+                <form id="enrollForm" class="enroll-form" enctype="multipart/form-data">
+                  <label class="field">
+                    <span class="field__label">Full Name *</span>
+                    <input class="input" type="text" name="name" required placeholder="Jane Doe" />
+                  </label>
+                  <label class="field">
+                    <span class="field__label">Employee ID *</span>
+                    <input class="input" type="text" name="employee_id" required placeholder="EMP-0042" />
+                  </label>
+                  <label class="field">
+                    <span class="field__label">Department</span>
+                    <input class="input" type="text" name="department" placeholder="Engineering" />
+                  </label>
+                  <label class="field">
+                    <span class="field__label">Email</span>
+                    <input class="input" type="email" name="email" placeholder="jane@company.com" />
+                  </label>
+                  <label class="field field--full">
+                    <span class="field__label">Face Images *</span>
+                    <input class="input" type="file" id="enrollImage" name="image" accept="image/*" multiple required />
+                    <span class="field__hint">Choose several clear photos of the same person, ideally from different angles. Maximum combined size: 32 MB.</span>
+                  </label>
+                  <div class="field field--full">
+                    <span class="field__label">Selected Images</span>
+                    <div class="preview" id="enrollPreview">No image selected</div>
+                  </div>
+                  <div class="field field--full">
+                    <button type="submit" class="btn btn--primary btn--block" id="btnEnroll">
+                      <span class="btn-text">Enroll Employee</span>
+                    </button>
+                  </div>
+                </form>
+              </div>
+            </div>
+
+            <div class="card">
+              <div class="card__header">
+                <h2 class="card__title">Enrolled Employees</h2>
+                <button id="btnRefreshEmployees" class="btn btn--ghost btn--sm">Refresh</button>
+              </div>
+              <div class="card__body" style="overflow:auto;">
+                <div class="table-wrap">
+                  <table class="data" aria-label="Enrolled employees">
+                    <thead>
+                      <tr>
+                        <th>Photo</th>
+                        <th>Name</th>
+                        <th>Employee ID</th>
+                        <th>Department</th>
+                        <th>Email</th>
+                        <th>Enrolled</th>
+                        <th></th>
+                      </tr>
+                    </thead>
+                    <tbody id="empBody"></tbody>
+                  </table>
+                  <div id="empEmpty" class="table-empty">No employees enrolled yet.</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Config page keeps live detector controls and system stats together -->
+        <div class="tab-panel" id="panel-config" role="tabpanel" aria-labelledby="tab-config">
+          <div class="toolbar">
+            <label class="field">
+              <span class="field__label">Range</span>
+              <select id="statsRange" class="select">
+                <option value="7d">Last 7 days</option>
+                <option value="30d">Last 30 days</option>
+                <option value="90d">Last 90 days</option>
+              </select>
+            </label>
+            <button id="btnRefreshStats" class="btn btn--primary btn--sm">Refresh</button>
+          </div>
+          <div class="charts-grid">
+            <div class="chart-card">
+              <h3>Daily Attendance Count</h3>
+              <div class="chart-canvas-wrap"><canvas id="chartDaily"></canvas></div>
+            </div>
+            <div class="chart-card">
+              <h3>Hourly Distribution</h3>
+              <div class="chart-canvas-wrap"><canvas id="chartHourly"></canvas></div>
+            </div>
+            <div class="chart-card">
+              <h3>Department Breakdown</h3>
+              <div class="chart-canvas-wrap"><canvas id="chartDept"></canvas></div>
+            </div>
+          </div>
+        </div>
+
+      </section>
+    </main>
+  </div>
+
+  <dialog id="adminAccessDialog" class="admin-dialog" aria-labelledby="adminAccessTitle">
+    <form id="adminAccessForm" class="admin-dialog__form">
+      <div class="card__header">
+        <h2 class="card__title" id="adminAccessTitle">Admin Access</h2>
+        <button id="btnCloseAdminAccess" class="btn btn--ghost btn--sm" type="button" aria-label="Close">Close</button>
+      </div>
+      <div class="admin-dialog__body">
+        <p class="field__hint">Enter a credential already configured by your server administrator. This does not create or elevate an account.</p>
+        <label class="field">
+          <span class="field__label" for="adminCredentialType">Credential type</span>
+          <select id="adminCredentialType" class="select">
+            <option value="api-key">Admin API key</option>
+            <option value="jwt">Admin JWT token</option>
+          </select>
+        </label>
+        <label class="field">
+          <span class="field__label" for="adminCredential">Credential</span>
+          <input id="adminCredential" class="input" type="password" autocomplete="new-password" required />
+        </label>
+        <p id="adminCredentialHint" class="field__hint">The API key must match the server's configured API_KEY.</p>
+      </div>
+      <div class="admin-dialog__actions">
+        <button id="btnClearAdminAccess" class="btn btn--ghost" type="button">Clear saved access</button>
+        <button class="btn btn--primary" type="submit">Save for this session</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Toast container -->
+  <div class="toast-container" id="toastContainer" aria-live="polite" aria-atomic="false"></div>
+
+  <!-- Chart.js via CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" crossorigin="anonymous"></script>
+
+  <!-- App scripts -->
+  <script src="js/api.js?v=20261025-enrollment-timeout"></script>
+  <script src="js/charts.js?v=20261024-auth-errors"></script>
+  <script src="js/app.js?v=20261025-frame-response-and-30fps"></script>
+</body>
+</html>

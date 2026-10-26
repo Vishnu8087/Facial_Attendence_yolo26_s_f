@@ -1,0 +1,55 @@
+# syntax=docker/dockerfile:1.6
+###############################################################################
+# Facial Attendance & Motion Tracking System — CPU image
+# Single-stage build; build tools remain installed in the final image.
+###############################################################################
+ARG PYTHON_VERSION=3.11
+FROM python:${PYTHON_VERSION}-slim
+
+LABEL org.opencontainers.image.title="facial-attendance-api-cpu" \
+      org.opencontainers.image.description="FastAPI + InsightFace + ByteTrack — CPU image" \
+      org.opencontainers.image.source="https://github.com/your-org/facial-attendance-system" \
+      org.opencontainers.image.licenses="MIT"
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PYTHONPATH=/app
+
+# Keep build dependencies in this single-stage image so native packages can
+# build during installation without a separate builder image.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential cmake git \
+        libgl1 libglib2.0-0 libsm6 libxext6 libxrender1 \
+        libpq-dev \
+        ffmpeg curl tini ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --system --gid 1001 app \
+    && useradd --system --uid 1001 --gid app --create-home --home-dir /home/app --shell /usr/sbin/nologin app
+
+WORKDIR /app
+
+COPY requirements/base.txt requirements/cpu.txt /tmp/requirements/
+RUN python -m pip install --upgrade pip wheel setuptools \
+    && python -m pip install -r /tmp/requirements/cpu.txt \
+    && rm -rf /tmp/requirements
+
+COPY --chown=app:app app/ /app/app/
+COPY --chown=app:app configs/config.yaml /app/configs/config.yaml
+COPY --chown=app:app frontend/ /app/frontend/
+COPY --chown=app:app alembic.ini /app/alembic.ini
+COPY --chown=app:app deploy/docker/entrypoint.sh /app/entrypoint.sh
+
+RUN mkdir -p /app/models /app/data /app/logs /app/tmp \
+    && chown -R app:app /app
+
+USER app
+
+EXPOSE 8000
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=45s --retries=3 \
+    CMD curl -fsS http://127.0.0.1:8000/health || exit 1
+
+ENTRYPOINT ["/usr/bin/tini", "--", "/app/entrypoint.sh"]
+CMD ["api"]

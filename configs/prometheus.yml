@@ -1,0 +1,53 @@
+# Prometheus scrape config — used by both docker-compose (`prom/prometheus`)
+# and the k8s ConfigMap in `deploy/k8s/prometheus.yaml` (the k8s version uses
+# Kubernetes service discovery; this one is static targets for compose).
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    cluster: facial-attendance
+    env: docker-compose
+
+# Alerting rule files (optional — uncomment when alert rules are added)
+# rule_files:
+#   - /etc/prometheus/rules/*.yml
+
+scrape_configs:
+  # ------------------------------------------------------------------- API
+  - job_name: api
+    metrics_path: /metrics
+    static_configs:
+      - targets: [api:8000]
+        labels:
+          service: api
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+
+  # ------------------------------------------------------------------- Worker
+  - job_name: worker
+    metrics_path: /metrics
+    static_configs:
+      - targets: [worker:8001]
+        labels:
+          service: worker
+
+  # ------------------------------------------------------------------- Postgres (via exporter if deployed)
+  - job_name: postgres
+    static_configs:
+      - targets: [db:5432]
+        labels:
+          service: postgres
+
+  # ------------------------------------------------------------------- Redis
+  - job_name: redis
+    static_configs:
+      - targets: [redis:6379]
+        labels:
+          service: redis
+
+  # ------------------------------------------------------------------- Prometheus self
+  - job_name: prometheus
+    static_configs:
+      - targets: [localhost:9090]

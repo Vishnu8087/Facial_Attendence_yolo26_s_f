@@ -1,0 +1,20 @@
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: api
+  namespace: facial-attendance
+  labels:
+    app.kubernetes.io/name: api
+    app.kubernetes.io/component: api
+    app.kubernetes.io/part-of: facial-attendance-system
+spec:
+  type: ClusterIP
+  ports:
+    - name: http-api
+      port: 8000
+      targetPort: http-api
+      protocol: TCP
+  selector:
+    app.kubernetes.io/name: api
+    app.kubernetes.io/component: api

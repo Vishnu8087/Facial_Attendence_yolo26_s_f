@@ -1,0 +1,234 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": { "type": "grafana", "uid": "-- Grafana --" },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "description": "Facial Attendance & Motion Tracking System — pipeline health, throughput, latency",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Pipeline FPS",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 0 },
+      "id": 1,
+      "targets": [
+        { "expr": "sum(rate(fa_pipeline_frames_total[1m]))", "legendFormat": "fps", "refId": "A" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": 10 },
+              { "color": "green", "value": 20 }
+            ]
+          },
+          "unit": "fps"
+        }
+      },
+      "options": { "colorMode": "value", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false } }
+    },
+    {
+      "type": "stat",
+      "title": "Faces detected / s",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 4, "w": 4, "x": 4, "y": 0 },
+      "id": 2,
+      "targets": [
+        { "expr": "sum(rate(fa_faces_detected_total[1m]))", "legendFormat": "faces/s", "refId": "A" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short" } }
+    },
+    {
+      "type": "stat",
+      "title": "Recognitions / s",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 4, "w": 4, "x": 8, "y": 0 },
+      "id": 3,
+      "targets": [
+        { "expr": "sum(rate(fa_recognitions_total[1m]))", "legendFormat": "rec/s", "refId": "A" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short" } }
+    },
+    {
+      "type": "stat",
+      "title": "Spoof rejection rate",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 4, "w": 4, "x": 12, "y": 0 },
+      "id": 4,
+      "targets": [
+        {
+          "expr": "sum(rate(fa_spoof_rejected_total[1m])) / clamp_min(sum(rate(fa_liveness_checked_total[1m])), 1)",
+          "legendFormat": "rejection",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 0.1 },
+              { "color": "red", "value": 0.3 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Active tracks",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 4, "w": 4, "x": 16, "y": 0 },
+      "id": 5,
+      "targets": [
+        { "expr": "avg(fa_active_tracks)", "legendFormat": "tracks", "refId": "A" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short" } }
+    },
+    {
+      "type": "stat",
+      "title": "DB pool in use",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 4, "w": 4, "x": 20, "y": 0 },
+      "id": 6,
+      "targets": [
+        { "expr": "fa_db_pool_checked_out", "legendFormat": "in-use", "refId": "A" },
+        { "expr": "fa_db_pool_size", "legendFormat": "pool-size", "refId": "B" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short" } }
+    },
+    {
+      "type": "timeseries",
+      "title": "Request latency p50 / p95 / p99 (s)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 4 },
+      "id": 7,
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum(rate(http_request_duration_seconds_bucket{service=\"api\"}[5m])) by (le))",
+          "legendFormat": "p50",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{service=\"api\"}[5m])) by (le))",
+          "legendFormat": "p95",
+          "refId": "B"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket{service=\"api\"}[5m])) by (le))",
+          "legendFormat": "p99",
+          "refId": "C"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": { "lineInterpolation": "linear", "lineWidth": 2, "fillOpacity": 10 }
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Throughput — frames / faces / recognitions",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 9, "w": 12, "x": 12, "y": 4 },
+      "id": 8,
+      "targets": [
+        { "expr": "sum(rate(fa_pipeline_frames_total[1m]))", "legendFormat": "frames/s", "refId": "A" },
+        { "expr": "sum(rate(fa_faces_detected_total[1m]))", "legendFormat": "faces/s", "refId": "B" },
+        { "expr": "sum(rate(fa_recognitions_total[1m]))", "legendFormat": "rec/s", "refId": "C" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": { "lineInterpolation": "linear", "lineWidth": 2, "fillOpacity": 10 }
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "DB pool utilisation",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 13 },
+      "id": 9,
+      "targets": [
+        { "expr": "fa_db_pool_checked_out", "legendFormat": "checked-out", "refId": "A" },
+        { "expr": "fa_db_pool_size - fa_db_pool_checked_out", "legendFormat": "available", "refId": "B" },
+        { "expr": "fa_db_pool_overflow", "legendFormat": "overflow", "refId": "C" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": { "stacking": { "mode": "normal", "group": "A" }, "lineWidth": 0, "fillOpacity": 30 }
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Active tracks (per worker)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 9, "w": 12, "x": 12, "y": 13 },
+      "id": 10,
+      "targets": [
+        { "expr": "fa_active_tracks", "legendFormat": "{{pod}}", "refId": "A" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short" } }
+    },
+    {
+      "type": "table",
+      "title": "Top recognised people (last 5m)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 22 },
+      "id": 11,
+      "targets": [
+        {
+          "expr": "topk(10, sum by (person_id, person_name) (rate(fa_recognitions_total[5m])))",
+          "legendFormat": "{{person_name}}",
+          "refId": "A",
+          "format": "table",
+          "instant": true
+        }
+      ]
+    }
+  ],
+  "refresh": "10s",
+  "schemaVersion": 39,
+  "tags": ["facial-attendance", "overview"],
+  "templating": {
+    "list": [
+      {
+        "name": "datasource",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": { "text": "Prometheus", "value": "prometheus" }
+      }
+    ]
+  },
+  "time": { "from": "now-1h", "to": "now" },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "Facial Attendance — Overview",
+  "uid": "facial-attendance-overview",
+  "version": 1,
+  "weekStart": ""
+}

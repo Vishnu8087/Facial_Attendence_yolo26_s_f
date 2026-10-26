@@ -1,0 +1,66 @@
+version: 2
+updates:
+  # Python dependencies
+  - package-ecosystem: pip
+    directory: "/requirements"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: UTC
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - python
+    commit-message:
+      prefix: "deps(pip)"
+      include: scope
+    groups:
+      testing:
+        patterns:
+          - "pytest*"
+          - "httpx"
+          - "aiosqlite"
+      ml:
+        patterns:
+          - "numpy"
+          - "opencv*"
+          - "onnxruntime*"
+          - "insightface"
+          - "scikit-*"
+          - "scipy"
+
+  # Root pyproject / setup.py / requirements.txt if present
+  - package-ecosystem: pip
+    directory: "/"
+    schedule:
+      interval: weekly
+    labels:
+      - dependencies
+      - python
+    commit-message:
+      prefix: "deps(pip-root)"
+
+  # Dockerfile base images
+  - package-ecosystem: docker
+    directory: "/deploy/docker"
+    schedule:
+      interval: weekly
+      day: monday
+    labels:
+      - dependencies
+      - docker
+    commit-message:
+      prefix: "deps(docker)"
+
+  # GitHub Actions
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    labels:
+      - dependencies
+      - github-actions
+    commit-message:
+      prefix: "deps(gha)"

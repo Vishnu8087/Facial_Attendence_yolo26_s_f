@@ -1,0 +1,34 @@
+# Dev / test / lint dependencies.
+# Install with: pip install -r requirements/dev.txt
+
+-r base.txt
+
+# --- Test stack ---
+pytest==8.3.4
+pytest-asyncio==0.24.0
+pytest-cov==6.0.0
+pytest-mock==3.14.0
+pytest-timeout==2.3.1
+pytest-xdist==3.6.1
+httpx==0.28.1                  # already in base but used as test client too
+respx==0.21.1                  # httpx mocking
+freezegun==1.5.1               # time mocking
+hypothesis==6.122.1            # property-based tests
+
+# --- Lint / format / types ---
+ruff==0.8.2
+black==24.10.0
+mypy==1.13.0
+types-PyYAML==6.0.12.20240917
+types-redis==4.6.0.20241004
+
+# --- Pre-commit ---
+pre-commit==4.0.1
+
+# --- Debug ---
+ipython==8.30.0
+ipdb==0.13.13
+
+# --- Docs (optional) ---
+mkdocs==1.6.1
+mkdocs-material==9.5.48

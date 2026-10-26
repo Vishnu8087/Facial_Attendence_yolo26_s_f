@@ -1,0 +1,356 @@
+# Architecture
+
+> **See also**: [README.md](../README.md) · [API.md](API.md) ·
+> [DEPLOYMENT.md](DEPLOYMENT.md) · [DEVELOPMENT.md](DEVELOPMENT.md) ·
+> [WEBSOCKET_PROTOCOL.md](WEBSOCKET_PROTOCOL.md) · [SECURITY.md](SECURITY.md)
+
+This document is the authoritative technical reference for the Facial
+Attendance & Motion Tracking System. It covers the system diagram,
+component breakdown, data flow, WebSocket protocol summary, all three
+strategy modes with sequence diagrams, anti-spoofing deep-dive, and
+scaling considerations.
+
+## Table of contents
+
+- [System diagram](#system-diagram)
+- [Component breakdown](#component-breakdown)
+- [Data flow diagram](#data-flow-diagram)
+- [WebSocket protocol summary](#websocket-protocol-summary)
+- [Strategy modes](#strategy-modes)
+- [Anti-spoofing deep-dive](#anti-spoofing-deep-dive)
+- [Scaling considerations](#scaling-considerations)
+
+## System diagram
+
+```
+                           ┌──────────────────────────────────────┐
+                           │           Browser dashboard           │
+                           │       frontend/index.html             │
+                           │                                       │
+                           │   ┌──────────────┐ ┌──────────────┐  │
+                           │   │ Input toggle │ │Strategy toggle│  │
+                           │   │ upload|live  │ │ det|trk|both │  │
+                           │   └──────┬───────┘ └──────┬───────┘  │
+                           └──────────┼─────────────────┼──────────┘
+                                      │  WebSocket /ws/stream (JSON + binary)
+                                      ▼
+┌────────────────────────────────────────────────────────────────────────┐
+│                          FastAPI app (app/)                            │
+│                                                                        │
+│  ┌───────────────────── routes/ ──────────────┐  ┌── services/ ───┐   │
+│  │ health.py    /health                       │  │ StreamManager   │  │
+│  │              /readyz                       │  │ EnrollmentSvc   │  │
+│  │ employees.py /api/employees  CRUD          │  │ AttendanceLogger│  │
+│  │ attendance.py/api/attendance list+export   │  └─────────────────┘  │
+│  │ stream.py    /ws/stream  (WebSocket)       │                       │
+│  └────────────────────────────────────────────┘                       │
+│                                                                        │
+│  ┌─────────────────── core/ AttendancePipeline ────────────────────┐  │
+│  │  FaceDetector ─▶ FaceAligner ─▶ MotionTracker ─▶ LivenessVerifier│  │
+│  │                                          │                       │  │
+│  │                                          ▼                       │  │
+│  │                              FeatureExtractor (ArcFace)           │  │
+│  │                                          │                       │  │
+│  │                                          ▼                       │  │
+│  │                              find_nearest_employee (pgvector)     │  │
+│  │                                          │                       │  │
+│  │                                          ▼                       │  │
+│  │                              AttendanceLogger (cooldown)          │  │
+│  └──────────────────────────────────────────────────────────────────┘  │
+└───────┬────────────────────────────────────────────────┬───────────────┘
+        │                                                │
+        ▼                                                ▼
+┌─────────────────────┐                       ┌────────────────────────┐
+│  PostgreSQL 15      │                       │   ONNX Runtime         │
+│  + pgvector         │                       │   CPU or CUDA          │
+│  - employees        │                       │   RetinaFace / YOLO26  │
+│  - attendance_log   │                       │   ArcFace recognizer   │
+│  - alembic_history  │                       └────────────────────────┘
+└─────────────────────┘
+```
+
+## Component breakdown
+
+### CV pipeline — `app/core/`
+
+| Module                | Responsibility                                              | Inputs → Outputs                                  |
+|-----------------------|-------------------------------------------------------------|---------------------------------------------------|
+| `detector.py`         | RetinaFace face detection + 5-pt landmarks                  | `np.ndarray HxWx3` → `List[Detection(bbox, landmarks, score)]` |
+| `detector_yolo26.py`  | Ultralytics YOLO26-face alternative detector (NMS-free)     | Same interface as `detector.py` — swap via `DETECTOR_BACKEND=yolo26` |
+| `aligner.py`          | Affine warp to 112×112 canonical crop                       | `frame + landmarks` → `np.ndarray 112x112x3`      |
+| `extractor.py`        | ArcFace 512-d embedding, L2-normalised                      | `112x112x3` → `np.ndarray (512,) float32`         |
+| `tracker.py`          | ByteTrack-style tracking with cooldown-based ID reset       | `List[Detection]` → `List[Track(track_id, bbox, landmarks)]` |
+| `liveness.py`         | EAR + blink counter + head-pose; static-frame rejection     | `landmarks` stream → `{is_real, ear, blink_count, head_pose, score}` |
+| `pipeline.py`         | Orchestrates all of the above per `strategy`                | `frame + strategy` → `FrameResult`                |
+| `utils.py`            | `cosine_similarity`, `compute_ear`, `euler_from_landmarks`  | pure numpy helpers                                |
+
+### API — `app/api/`
+
+| Route file      | Endpoint(s)                                  | Notes                                       |
+|-----------------|----------------------------------------------|---------------------------------------------|
+| `health.py`     | `GET /health`, `GET /readyz`                 | Liveness + readiness probes                 |
+| `employees.py`  | `POST/GET/DELETE /api/employees[/{id}]`      | Multipart image upload on POST              |
+| `attendance.py` | `GET /api/attendance`, `/api/attendance/export` | CSV / JSON export via `?format=`         |
+| `stream.py`     | `WS /ws/stream`                              | Bidirectional, see WEBSOCKET_PROTOCOL.md    |
+
+### DB — `app/db/`
+
+- **ORM**: SQLAlchemy 2.0 async (`asyncpg` driver).
+- **Migrations**: Alembic. Apply with `alembic upgrade head`.
+- **Models**:
+  - `Employee` (`id`, `employee_id`, `name`, `department`, `embedding (vector(512))`, `created_at`)
+  - `AttendanceLog` (`id`, `employee_id`, `timestamp`, `strategy`, `score`, `metadata`)
+- **CRUD** (`crud.py`): `create_employee`, `get_employee_by_employee_id`,
+  `list_employees`, `delete_employee`, `find_nearest_employee` (pgvector
+  cosine), `log_attendance`, `recently_logged` (cooldown check),
+  `list_attendance` (filtered + paginated).
+
+### Frontend — `frontend/`
+
+A single-page vanilla-JS dashboard with **no build step**:
+
+- `frontend/index.html` — shell with the two toggle controls + video preview.
+- `frontend/css/` — minimal styling.
+- `frontend/js/` — WebSocket client, camera/upload handling, Canvas
+  frame-grabbing, attendance feed rendering.
+
+The two toggles are described in [`README.md#-two-dashboard-toggles`](../README.md#-two-dashboard-toggles).
+
+### Deploy — `deploy/`
+
+- `deploy/docker/` — Dockerfile.cpu, Dockerfile.gpu, entrypoint.sh.
+- `deploy/k8s/` — Plain Kubernetes release YAML manifests (namespace, deployments, services, HPA, ingress, network policies, prometheus, grafana, redis). No Helm dependency.
+  GPU, TLS, monitoring.
+
+## Data flow diagram
+
+```
+[Camera / Video file]
+        │
+        │ (browser Canvas → JPEG bytes)
+        ▼
+┌──────────────────┐     config msg        ┌──────────────────┐
+│  StreamManager    │◀──────────────────── │  Dashboard JS    │
+│  (per-conn state) │                       │  (toggle UI)     │
+└────────┬──────────┘                       └──────────────────┘
+         │ frame + strategy
+         ▼
+┌──────────────────────────────────────────────────┐
+│ AttendancePipeline.process_frame(frame, strategy)│
+└────────┬─────────────────────────────────────────┘
+         │ detections
+         ▼
+   [FaceDetector] ── [FaceAligner] ── [MotionTracker] ── [LivenessVerifier]
+                                                              │
+                                                              │ (track birth or strategy=detection_only)
+                                                              ▼
+                                                   [FeatureExtractor]
+                                                              │ embedding (512,)
+                                                              ▼
+                                          [find_nearest_employee (pgvector)]
+                                                              │ match? + cooldown OK?
+                                                              ▼
+                                                  [AttendanceLogger.log]
+                                                              │
+                                                              ▼
+                                                  Postgres attendance_log
+                                                              │
+                                                              │ (async event)
+                                                              ▼
+                                          StreamManager broadcasts {type: attendance, ...}
+                                                              │
+                                                              ▼
+                                                       Dashboard feed
+```
+
+## WebSocket protocol summary
+
+The full spec lives in [`WEBSOCKET_PROTOCOL.md`](WEBSOCKET_PROTOCOL.md).
+Summary:
+
+**Client → Server**
+
+| Message                                            | Purpose                                  |
+|----------------------------------------------------|------------------------------------------|
+| `{"type": "config", "strategy": "both"}`           | Hot-swap pipeline strategy mid-stream    |
+| `{"type": "source", "mode": "upload"}`             | Notify backend of input source change    |
+| `{"type": "ping"}`                                 | App-level keepalive                      |
+| Binary JPEG/PNG frame                              | A video frame to process                 |
+
+**Server → Client**
+
+| Message                                            | Purpose                                  |
+|----------------------------------------------------|------------------------------------------|
+| `{"type": "frame", "image": "<base64>", "strategy": "both", "detections": [...]}` | Annotated processed frame |
+| `{"type": "attendance", "employee_id": "...", "timestamp": "...", "score": 0.83}`  | A logged attendance event  |
+| `{"type": "ack", "for": "config", "strategy": "both"}`                              | Acknowledgement of control msg |
+| `{"type": "error", "message": "...", "code": "..."}`                                | Error notification           |
+| `{"type": "pong"}`                                                                  | Keepalive response           |
+
+## Strategy modes
+
+### `strategy="both"` (default) — full pipeline
+
+```
+ Browser                StreamManager              Pipeline                  DB
+   │   binary frame         │                        │                      │
+   ├───────────────────────▶│                        │                      │
+   │                        │  process_frame(s=both) │                      │
+   │                        ├───────────────────────▶│                      │
+   │                        │                        │ detect → align       │
+   │                        │                        │ track (existing IDs) │
+   │                        │                        │ liveness             │
+   │                        │                        │─ if track birth ─────▶│ extract → match → log
+   │                        │                        │─ else (alive) ───────│ skip extract
+   │                        │                        │                      │
+   │                        │◀───────────────────────┤ FrameResult          │
+   │                        │  emit {type: frame}    │                      │
+   │◀───────────────────────┤                        │                      │
+   │                        │  emit {type: attendance} (if logged)          │
+   │◀───────────────────────┤                                                │
+```
+
+**When to use**: production. Best accuracy with reasonable cost — the
+512-d ArcFace embedding is computed only once per track birth (and again
+after the cooldown expires), not every frame.
+
+### `strategy="detection_only"` — Strategy 1 standalone
+
+```
+ Browser            StreamManager           Pipeline                    DB
+   │  frame              │                      │                       │
+   ├────────────────────▶│                      │                       │
+   │                     │ process_frame(s=det) │                       │
+   │                     ├─────────────────────▶│                       │
+   │                     │                      │ detect → align        │
+   │                     │                      │ extract (every frame) │
+   │                     │                      ├──────────────────────▶│ match → log
+   │                     │                      │                       │
+   │                     │◀─────────────────────┤ FrameResult           │
+   │◀────────────────────┤ emit {type: frame, type: attendance}        │
+```
+
+**When to use**: high-accuracy scenarios with few faces per frame (e.g.
+single-door check-in). Skip tracker + liveness entirely — every frame
+re-detects, re-extracts, and re-matches. Most expensive per frame.
+
+### `strategy="tracking_only"` — Strategy 2 standalone
+
+```
+ Browser            StreamManager           Pipeline                    DB
+   │  frame              │                      │                       │
+   ├────────────────────▶│                      │                       │
+   │                     │ process_frame(s=trk) │                       │
+   │                     ├─────────────────────▶│                       │
+   │                     │                      │ detect → track        │
+   │                     │                      │ liveness              │
+   │                     │                      │ (NO extract, NO match)│
+   │                     │                      │ (NO DB write)         │
+   │                     │◀─────────────────────┤ FrameResult           │
+   │◀────────────────────┤ emit {type: frame}   │                       │
+   │                     │ (no attendance events)                       │
+```
+
+**When to use**: pure motion / crowd-flow analytics where identity is
+irrelevant. Cheapest mode — no embedding extraction, no DB writes.
+
+### Strategy hot-swap
+
+A `{"type": "config", "strategy": "..."}` message takes effect on the
+**next** frame processed by the StreamManager. The current frame
+finishes with the old strategy; no reconnect is needed. Tracker state is
+preserved across switches *unless* the new strategy is `detection_only`,
+in which case the tracker is reset (no IDs to preserve).
+
+## Anti-spoofing deep-dive
+
+The `LivenessVerifier` is a heuristic, zero-model anti-spoofing layer
+designed to reject:
+
+1. **Static photographs** held up to the camera.
+2. **Screen-replay** attacks (a phone playing a video of the target).
+3. **Printed masks** without eye articulation.
+
+It does **not** defend against high-quality 3D masks or real-time
+deepfake video replay — those require a learned anti-spoofing model
+(roadmap item, v0.2+).
+
+### Mechanism
+
+The verifier consumes a rolling window of 5-point landmarks per face
+track and computes:
+
+- **Eye-Aspect-Ratio (EAR)** per frame:
+
+  ```
+   p1 ─────── p2
+   │           │
+   p6         p3
+   │           │
+   p5 ─────── p4
+
+   EAR = (||p2-p6|| + ||p3-p5||) / (2 * ||p1-p4||)
+  ```
+
+  Drops below `LIVENESS_EAR_THRESHOLD` (default 0.20) ⇒ eyelid closed.
+
+- **Blink detection**: a blink = a frame where EAR < threshold
+  surrounded by frames where EAR ≥ threshold. The rolling window
+  (`LIVENESS_WINDOW_SECONDS`, default 5s) must contain ≥
+  `LIVENESS_MIN_BLINKS` (default 1) blinks.
+
+- **Head-pose (Euler angles)**: derived from the 5-point landmarks via
+  a PnP-like solve. A static photo cannot rotate; a small natural head
+  motion (yaw/pitch variance > 3° over the window) is required.
+
+- **Static-frame rejection**: if every frame in the window has
+  identical landmarks (within 0.5 px), the verifier short-circuits and
+  returns `is_real=False` regardless of blink count.
+
+### Score composition
+
+```
+score = 0.4 * blink_ok + 0.3 * pose_variance_ok + 0.3 * not_static
+is_real = score >= 0.6
+```
+
+### Bypass conditions
+
+The `AttendancePipeline` consults `LivenessVerifier` only in the
+`both` and `tracking_only` strategies. In `detection_only`, liveness is
+skipped (per the orchestrator's spec in Task 0-amend).
+
+## Scaling considerations
+
+### Vertical
+
+- **CPU**: `buffalo_s` model pack runs at ~18 FPS on a modern i7 with
+  `strategy="both"`. Switch to `buffalo_l` only if you have ≥ 8 cores
+  and need the extra recall.
+- **GPU**: a single NVIDIA A10 handles 60+ FPS with `strategy="both"`.
+  Pin `INFERENCE_DEVICE=cuda` and use the GPU Dockerfile.
+
+### Horizontal
+
+- The API is **stateless** — scale horizontally behind a load balancer.
+- The WebSocket `/ws/stream` is **stateful per connection** — use sticky
+  sessions or a dedicated StreamManager pool with consistent hashing on
+  `employee_id`.
+- Postgres: pgvector HNSW index keeps nearest-neighbour at <5 ms even at
+  1M employees. For >10M, shard by `department` or use a dedicated
+  vector DB (Milvus / Qdrant) and replicate.
+
+### Backpressure
+
+- `MAX_STREAM_FPS` (default 15) caps the server-side processing rate.
+  Frames arriving faster are dropped at the WebSocket layer with a
+  `{type: error, code: "rate_limited"}` notification.
+- The `AttendanceLogger` is fire-and-forget; it pushes to a queue and a
+  background task batches DB writes to avoid contention.
+
+### Multi-tenancy
+
+- The schema has no built-in `tenant_id` column yet. For multi-tenant
+  deployments, add `tenant_id` to `Employee` and `AttendanceLog` and
+  filter every CRUD call. The pgvector index should be partitioned by
+  `tenant_id` to keep per-tenant search fast.

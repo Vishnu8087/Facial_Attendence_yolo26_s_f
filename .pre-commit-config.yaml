@@ -1,0 +1,90 @@
+# See https://pre-commit.com for hook docs.
+# Install once:  pre-commit install
+# Run manually:  pre-commit run --all-files
+
+repos:
+  # ----------------------------------------------------------------------- #
+  # Python: ruff (lint + format-as-fixer when configured)
+  # ----------------------------------------------------------------------- #
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.6.9
+    hooks:
+      - id: ruff
+        args: [--fix, --exit-non-zero-on-fix]
+        files: ^(app|tests)/
+      - id: ruff-format
+        files: ^(app|tests)/
+
+  # ----------------------------------------------------------------------- #
+  # Python: black (kept as a secondary formatter check)
+  # ----------------------------------------------------------------------- #
+  - repo: https://github.com/psf/black
+    rev: 24.10.0
+    hooks:
+      - id: black
+        language_version: python3
+        files: ^(app|tests)/
+
+  # ----------------------------------------------------------------------- #
+  # Python: type check (best-effort; mypy may emit warnings on stubs)
+  # ----------------------------------------------------------------------- #
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.13.0
+    hooks:
+      - id: mypy
+        args: [--ignore-missing-imports, --no-strict-optional]
+        files: ^app/
+        additional_dependencies: []
+
+  # ----------------------------------------------------------------------- #
+  # General file hygiene
+  # ----------------------------------------------------------------------- #
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+        args: [--unsafe]  # allow !!python/... in CI YAML if ever needed
+      - id: check-toml
+      - id: check-json
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: [--maxkb=1024]  # block accidental >1MB commits (model files etc.)
+      - id: detect-private-key
+      - id: check-ast
+        files: ^.*\.py$
+      - id: debug-statements
+      - id: mixed-line-ending
+        args: [--fix=lf]
+      - id: requirements-txt-fixer
+
+  # ----------------------------------------------------------------------- #
+  # Markdown / docs
+  # ----------------------------------------------------------------------- #
+  - repo: https://github.com/igorshubovych/markdownlint-cli
+    rev: v0.42.0
+    hooks:
+      - id: markdownlint
+        args: [--disable=MD013, --disable=MD033, --disable=MD041]
+        files: \.md$
+
+  # ----------------------------------------------------------------------- #
+  # Security
+  # ----------------------------------------------------------------------- #
+  - repo: https://github.com/PyCQA/bandit
+    rev: 1.7.10
+    hooks:
+      - id: bandit
+        args: [-ll, -q]
+        files: ^app/
+
+  # ----------------------------------------------------------------------- #
+  # YAML formatting
+  # ----------------------------------------------------------------------- #
+  - repo: https://github.com/adrienverge/yamllint
+    rev: v1.35.1
+    hooks:
+      - id: yamllint
+        args: [-d, relaxed]
+        files: \.(yml|yaml)$

@@ -1,0 +1,70 @@
+# Version control
+.git
+.gitignore
+.github
+.gitattributes
+
+# Python caches
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.coverage
+htmlcov/
+.hypothesis/
+
+# Virtual envs
+.venv/
+venv/
+env/
+
+# Build artifacts
+build/
+dist/
+*.egg
+
+# Pre-downloaded model weights — must be fetched at runtime by entrypoint
+# so the image stays small and the right device (GPU/CPU) variant is used.
+models/*.onnx
+models/*.pt
+models/*.bin
+models/*.zip
+models/*/*.onnx
+models/*/*.pt
+models/*/*.bin
+
+# Local data — never ship secrets / PII into images
+data/
+logs/
+*.log
+*.sqlite3
+*.db
+
+# Tests & docs
+tests/
+*.md
+docs/
+LICENSE
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Deploy scaffolding not needed inside image (compose files, k8s manifests, helm)
+deploy/k8s/
+deploy/helm/
+docker-compose*.yml
+
+# CI
+Dockerfile*
+!deploy/docker/Dockerfile.*

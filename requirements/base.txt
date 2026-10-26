@@ -1,0 +1,51 @@
+# Shared production dependencies for the Facial Attendance & Motion Tracking System.
+# Install requirements/cpu.txt or requirements/gpu.txt to select one ONNX Runtime build.
+# Python: 3.11
+
+# --- Web framework ---
+fastapi==0.115.5
+uvicorn[standard]==0.32.1
+python-multipart==0.0.17
+websockets==13.1
+
+# --- Settings & validation ---
+pydantic==2.10.3
+pydantic-settings==2.6.1
+
+# --- Database ---
+SQLAlchemy[asyncio]==2.0.36
+asyncpg==0.30.0
+alembic==1.14.0
+pgvector==0.3.6
+
+# --- CV / ML ---
+numpy==1.26.4                  # pinned: insightface + onnxruntime compatibility
+opencv-python==4.10.0.84
+scikit-learn==1.5.2
+insightface==0.7.3
+supervision==0.25.1            # ByteTrack wrapper
+# YOLO26-face detector (alternative to RetinaFace). YOLO26 requires a current Ultralytics release.
+ultralytics==8.4.187
+
+# --- Logging ---
+structlog==24.4.0
+python-json-logger==3.2.1
+
+# --- Metrics ---
+prometheus-fastapi-instrumentator==7.0.0
+prometheus-client==0.21.1
+
+# --- HTTP client ---
+httpx==0.28.1
+
+# --- Error tracking ---
+sentry-sdk[fastapi]==2.19.2
+
+# --- Cache / pub-sub ---
+redis==5.2.1
+
+# --- Utils ---
+python-dotenv==1.0.1
+tenacity==9.0.0
+PyYAML==6.0.2
+orjson==3.10.12

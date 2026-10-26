@@ -1,0 +1,47 @@
+---
+# Ingress — nginx ingress class, TLS, routes:
+#   /          → api:8000
+#   /grafana   → grafana:3000
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: facial-attendance
+  namespace: facial-attendance
+  labels:
+    app.kubernetes.io/name: facial-attendance
+    app.kubernetes.io/part-of: facial-attendance-system
+  annotations:
+    kubernetes.io/ingress.class: nginx
+    nginx.ingress.kubernetes.io/proxy-body-size: "50m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/websocket-services: "api"
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      proxy_set_header Upgrade $http_upgrade;
+      proxy_set_header Connection "upgrade";
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - attendance.example.com
+      secretName: facial-attendance-tls
+  rules:
+    - host: attendance.example.com
+      http:
+        paths:
+          - path: /grafana
+            pathType: Prefix
+            backend:
+              service:
+                name: grafana
+                port:
+                  number: 3000
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: api
+                port:
+                  number: 8000

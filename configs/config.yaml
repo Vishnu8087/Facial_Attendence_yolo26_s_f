@@ -1,0 +1,65 @@
+# Application runtime config (YAML).
+# Loaded by app.core.config.load_yaml() — env vars override these values.
+
+app:
+  host: 0.0.0.0
+  port: 8000
+  workers: 2
+  # Reload only for dev — never enable in prod
+  reload: false
+
+logging:
+  level: INFO
+  format: json         # json | console
+  structlog_develop: false
+  log_exceptions: true
+
+database:
+  pool_size: 20
+  max_overflow: 10
+  pool_timeout: 30
+  pool_recycle: 1800
+  echo: false
+
+cv:
+  # Detector backend:
+  #   yolo26       → Ultralytics YOLO26-face (default; small model)
+  #   insightface  → InsightFace SCRFD detector
+  detector_backend: yolo26
+  # Small model selected based on the project's YOLO26-s benchmark results.
+  detector_model: yolo26s-face.pt
+  # Device override: "cpu", "cuda", "cuda:0". Empty = auto (uses GPU if available).
+  detector_device: ""
+  model_name: buffalo_l
+  model_dir: /app/models
+  det_size: 640
+  similarity_threshold: 0.30  # lowered from 0.55 — LFW benchmark: 0% FAR + 99.33% accuracy at 0.30
+  cooldown_seconds: 30
+  min_face_size: 60
+  max_faces_per_frame: 50
+  tracker: bytetrack        # bytetrack | sort
+  liveness:
+    enabled: true
+    min_score: 0.5
+  default_strategy: both    # both | detection_only | tracking_only
+
+streams:
+  max_cameras: 32
+  max_queue: 128
+  heartbeat_interval: 5
+  reconnect_backoff: 2
+  reconnect_max: 60
+  frame_timeout: 30
+
+api:
+  cors_origins: "*"
+  max_upload_mb: 32
+  ws_max_queue: 128
+  sentry:
+    enabled: false
+    traces_sample_rate: 0.1
+
+prometheus:
+  enabled: true
+  port: 8000
+  path: /metrics

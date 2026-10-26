@@ -1,0 +1,108 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg
+*.egg-info/
+.eggs/
+develop-eggs/
+sdist/
+wheels/
+pip-wheel-metadata/
+.installed.cfg
+MANIFEST
+
+# --- Test / coverage / type caches ---
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.nox/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+*.cover
+.hypothesis/
+.cache/
+
+# --- Virtual envs ---
+.venv/
+venv/
+env/
+ENV/
+.python-version
+.runtime/
+
+# --- IDE / editors ---
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+*.sublime-*
+
+# --- OS ---
+.DS_Store
+.AppleDouble
+.LSOverride
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# --- Project: data, logs, models ---
+data/
+!data/.gitkeep
+logs/
+*.log
+*.sqlite3
+*.db
+.runtime/
+demo/
+tests/fixtures/sample_faces/*.png
+models/*.onnx
+models/*.pt
+models/*.bin
+models/*.zip
+models/*/
+!models/.gitkeep
+
+# --- Secrets / env ---
+.env
+.env.*
+!.env.example
+!.env.dev.example
+*.pem
+*.key
+secrets.yaml
+!deploy/k8s/secret.yaml     # example secret with placeholders — keep
+!deploy/helm/facial-attendance/templates/secret.yaml
+
+# --- Helm chart dependencies ---
+deploy/helm/facial-attendance/charts/
+deploy/helm/facial-attendance/Chart.lock
+
+# --- Build artifacts ---
+*.zip
+*.tar
+*.tar.gz
+download/
+
+# --- Frontend build (Task 1-c owns frontend/) ---
+frontend/node_modules/
+frontend/dist/
+frontend/.parcel-cache/
+
+# --- Jupyter ---
+.ipynb_checkpoints/
+*.ipynb
+
+# --- Misc ---
+TODO.md
+NOTES.md

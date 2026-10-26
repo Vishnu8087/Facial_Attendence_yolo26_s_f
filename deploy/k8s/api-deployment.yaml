@@ -1,0 +1,188 @@
+---
+# API Deployment — FastAPI app
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  namespace: facial-attendance
+  labels:
+    app.kubernetes.io/name: api
+    app.kubernetes.io/component: api
+    app.kubernetes.io/part-of: facial-attendance-system
+spec:
+  replicas: 2
+  revisionHistoryLimit: 5
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: api
+      app.kubernetes.io/component: api
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: api
+        app.kubernetes.io/component: api
+        app.kubernetes.io/part-of: facial-attendance-system
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: "/metrics"
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        runAsGroup: 1001
+        fsGroup: 1001
+      terminationGracePeriodSeconds: 60
+      initContainers:
+        # Wait for DB readiness before migrations
+        - name: wait-for-db
+          image: postgres:16-alpine
+          command:
+            - /bin/sh
+            - -ec
+            - |
+              until pg_isready -h "${DB_HOST}" -p "${DB_PORT:-5432}" -U "${DB_USER}"; do
+                echo "[init] waiting for ${DB_HOST}:${DB_PORT:-5432} …"
+                sleep 2
+              done
+          envFrom:
+            - configMapRef:
+                name: facial-attendance-config
+            - secretRef:
+                name: facial-attendance-secret
+        # Download InsightFace models into PVC if missing
+        - name: fetch-models
+          image: facial-attendance/api:latest-cpu
+          command:
+            - /bin/sh
+            - -ec
+            - |
+              if [ -f /models/.models-ready ]; then
+                echo "[init] models already present"
+                exit 0
+              fi
+              mkdir -p /models
+              python - <<'PY'
+              import os
+              os.environ.setdefault("INSIGHTFACE_HOME", "/models/insightface")
+              os.environ.setdefault("HF_HOME", "/models/huggingface")
+              try:
+                  from insightface.app import FaceAnalysis
+                  app = FaceAnalysis(name=os.environ.get("MODEL_NAME","buffalo_l"),
+                                     providers=["CPUExecutionProvider"])
+                  app.prepare(ctx_id=-1, det_size=(640,640))
+                  print("[init] model warm OK")
+              except Exception as exc:
+                  print(f"[init][WARN] model warm failed: {exc}")
+              PY
+              touch /models/.models-ready
+          envFrom:
+            - configMapRef:
+                name: facial-attendance-config
+          volumeMounts:
+            - name: models
+              mountPath: /models
+        # Run Alembic migrations (idempotent)
+        - name: migrate
+          image: facial-attendance/api:latest-cpu
+          command: ["alembic", "upgrade", "head"]
+          envFrom:
+            - configMapRef:
+                name: facial-attendance-config
+            - secretRef:
+                name: facial-attendance-secret
+          env:
+            - name: DATABASE_URL
+              value: "postgresql+asyncpg://$(DB_USER):$(DB_PASSWORD)@$(DB_HOST):$(DB_PORT)/$(DB_NAME)"
+          volumeMounts:
+            - name: models
+              mountPath: /app/models
+      containers:
+        - name: api
+          image: facial-attendance/api:latest-cpu
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http-api
+              containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: facial-attendance-config
+            - secretRef:
+                name: facial-attendance-secret
+          env:
+            - name: DATABASE_URL
+              value: "postgresql+asyncpg://$(DB_USER):$(DB_PASSWORD)@$(DB_HOST):$(DB_PORT)/$(DB_NAME)"
+            - name: REDIS_URL
+              value: "redis://$(REDIS_HOST):$(REDIS_PORT)/$(REDIS_DB)"
+          volumeMounts:
+            - name: models
+              mountPath: /app/models
+              readOnly: true
+            - name: app-data
+              mountPath: /app/data
+            - name: app-logs
+              mountPath: /app/logs
+            - name: config-file
+              mountPath: /app/configs
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http-api
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http-api
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http-api
+            periodSeconds: 10
+            failureThreshold: 30
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "1Gi"
+            limits:
+              cpu: "2000m"
+              memory: "4Gi"
+              # Uncomment for GPU node:
+              # nvidia.com/gpu: 1
+      volumes:
+        - name: models
+          persistentVolumeClaim:
+            claimName: api-models-pvc
+        - name: app-data
+          emptyDir: {}
+        - name: app-logs
+          emptyDir: {}
+        - name: config-file
+          configMap:
+            name: facial-attendance-config-file
+
+---
+# PVC for cached InsightFace models (shared across pods — RWX recommended)
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: api-models-pvc
+  namespace: facial-attendance
+spec:
+  accessModes: ["ReadWriteMany"]   # use ReadWriteOnce if no RWX storage class
+  storageClassName: standard
+  resources:
+    requests:
+      storage: 5Gi

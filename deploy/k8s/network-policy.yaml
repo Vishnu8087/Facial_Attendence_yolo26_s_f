@@ -1,0 +1,165 @@
+---
+# NetworkPolicy — default-deny with explicit allow-rules
+# Namespace: facial-attendance
+#
+#  - api → postgres : 5432
+#  - api → redis    : 6379
+#  - worker → postgres : 5432
+#  - worker → redis    : 6379
+#  - ingress-nginx namespace → api : 8000 (ingress traffic)
+#  - prometheus → api : 8000 (scrape /metrics)
+#  - prometheus → worker : 8001 (scrape /metrics)
+#
+# Requires a CNI supporting NetworkPolicy (Calico / Cilium / Weave).
+# ---------------------------------------------------------------------------
+
+# Default deny all ingress to namespace pods
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: facial-attendance
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+  ingress: []
+
+---
+# Default deny all egress from namespace pods
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-egress
+  namespace: facial-attendance
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress: []
+
+---
+# Allow DNS egress (kube-system)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns-egress
+  namespace: facial-attendance
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+
+---
+# api → postgres:5432 + redis:6379
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: api-egress-data
+  namespace: facial-attendance
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: api
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: postgres
+      ports:
+        - protocol: TCP
+          port: 5432
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: redis
+      ports:
+        - protocol: TCP
+          port: 6379
+
+---
+# worker → postgres:5432 + redis:6379
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: worker-egress-data
+  namespace: facial-attendance
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: worker
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: postgres
+      ports:
+        - protocol: TCP
+          port: 5432
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: redis
+      ports:
+        - protocol: TCP
+          port: 6379
+
+---
+# Allow ingress-nginx namespace (or any pod) → api:8000
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: api-ingress-http
+  namespace: facial-attendance
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: api
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector: {}
+      ports:
+        - protocol: TCP
+          port: 8000
+
+---
+# Allow prometheus → api:8000 and worker:8001 (scrape /metrics)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: prometheus-scrape
+  namespace: facial-attendance
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: In
+        values: [api, worker]
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
+      ports:
+        - protocol: TCP
+          port: 8000
+        - protocol: TCP
+          port: 8001

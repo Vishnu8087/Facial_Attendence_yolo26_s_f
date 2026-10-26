@@ -1,0 +1,98 @@
+---
+# Non-secret application config. Mount as env or volume.
+# NOTE: do NOT put secrets here. Use secret.yaml + sealed-secrets / external-secrets / Vault.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: facial-attendance-config
+  namespace: facial-attendance
+  labels:
+    app.kubernetes.io/name: facial-attendance
+    app.kubernetes.io/part-of: facial-attendance-system
+data:
+  # --- Database (host only — credentials in Secret) ---
+  DB_HOST: "postgres"
+  DB_PORT: "5432"
+  DB_NAME: "attendance"
+  DB_POOL_SIZE: "20"
+  DB_MAX_OVERFLOW: "10"
+  DB_POOL_TIMEOUT: "30"
+  DB_POOL_RECYCLE: "1800"
+
+  # --- Redis ---
+  REDIS_HOST: "redis"
+  REDIS_PORT: "6379"
+  REDIS_DB: "0"
+
+  # --- Logging ---
+  LOG_LEVEL: "INFO"
+  LOG_FORMAT: "json"
+  STRUCTLOG_DEVELOP: "false"
+
+  # --- CV pipeline ---
+  MODEL_NAME: "buffalo_l"
+  MODEL_DIR: "/app/models"
+  DET_SIZE: "640"
+  SIMILARITY_THRESHOLD: "0.55"
+  COOLDOWN_SECONDS: "30"
+  MIN_FACE_SIZE: "60"
+  MAX_FACES_PER_FRAME: "50"
+  TRACKER_TYPE: "bytetrack"
+  LIVENESS_ENABLED: "true"
+  DEFAULT_STRATEGY: "both"
+
+  # --- API ---
+  API_HOST: "0.0.0.0"
+  API_PORT: "8000"
+  WORKERS: "2"
+  PROMETHEUS_PORT: "8000"
+  CORS_ORIGINS: "*"
+  MAX_UPLOAD_MB: "32"
+  WS_MAX_QUEUE: "128"
+  GPU_ENABLED: "false"
+
+  # --- Runtime ---
+  PYTHONUNBUFFERED: "1"
+  PYTHONPATH: "/app"
+
+---
+# Application runtime config (yaml) — mounted as a file at /app/configs/config.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: facial-attendance-config-file
+  namespace: facial-attendance
+  labels:
+    app.kubernetes.io/name: facial-attendance
+    app.kubernetes.io/part-of: facial-attendance-system
+data:
+  config.yaml: |
+    # Runtime config consumed by app.core.config.load_yaml()
+    app:
+      host: 0.0.0.0
+      port: 8000
+      workers: 2
+    logging:
+      level: INFO
+      format: json
+    database:
+      pool_size: 20
+      max_overflow: 10
+      pool_recycle: 1800
+    cv:
+      model_name: buffalo_l
+      model_dir: /app/models
+      det_size: 640
+      similarity_threshold: 0.55
+      cooldown_seconds: 30
+      min_face_size: 60
+      max_faces_per_frame: 50
+      tracker: bytetrack
+      liveness: true
+      default_strategy: both
+    streams:
+      max_cameras: 32
+      max_queue: 128
+      heartbeat_interval: 5
+      reconnect_backoff: 2
+      reconnect_max: 60
