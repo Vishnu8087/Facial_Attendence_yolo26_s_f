@@ -8,7 +8,7 @@
 -r base.txt
 
 # --- ONNX Runtime CUDA build ---
-onnxruntime-gpu==1.20.1
+onnxruntime-gpu==1.31.0
 
 # --- PyTorch 2.5 with CUDA 12.1 (cu121 wheel) ---
 # Pulled from the pytorch index; constraint added here for reproducibility.

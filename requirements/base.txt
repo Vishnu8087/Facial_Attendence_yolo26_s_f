@@ -19,10 +19,10 @@ alembic==1.14.0
 pgvector==0.3.6
 
 # --- CV / ML ---
-numpy==1.26.4                  # pinned: insightface + onnxruntime compatibility
-opencv-python==4.10.0.84
-scikit-learn==1.5.2
-insightface==0.7.3
+numpy==2.5.4                  # pinned: insightface + onnxruntime compatibility
+opencv-python==5.0.0.93
+scikit-learn==1.9.1
+insightface==2.1
 supervision==0.25.1            # ByteTrack wrapper
 # YOLO26-face detector (alternative to RetinaFace). YOLO26 requires a current Ultralytics release.
 ultralytics==8.4.187
