@@ -16,7 +16,7 @@ freezegun==1.5.1               # time mocking
 hypothesis==6.122.1            # property-based tests
 
 # --- Lint / format / types ---
-ruff==0.8.2
+ruff==0.17.2
 black==24.10.0
 mypy==1.13.0
 types-PyYAML==6.0.12.20240917
