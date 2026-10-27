@@ -80,7 +80,10 @@
       if (err.name === 'AbortError') {
         throw new Error(`Request to ${path} timed out after ${timeout}ms`);
       }
-      throw new Error(`Network error: ${err.message}`);
+      throw new Error(
+        `Cannot reach the FaceTrack backend at ${API_BASE}: ${err.message}. ` +
+        'Start the backend and wait for model warm-up to finish, then retry.'
+      );
     } finally {
       clearTimeout(timer);
     }

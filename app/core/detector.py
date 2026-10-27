@@ -168,7 +168,7 @@ class FaceDetector:
             raw = model.get(frame)  # list of Face objects (or empty)
         except Exception as exc:
             logger.exception("detector.run_failed err=%s", exc)
-            return []
+            raise RuntimeError("InsightFace detection inference failed") from exc
 
         results: List[DetectionResult] = []
         for face_obj in raw:

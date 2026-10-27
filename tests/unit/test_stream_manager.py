@@ -35,12 +35,36 @@ async def test_startup_warms_detector_and_extractor(monkeypatch):
     )
     monkeypatch.setattr(
         "app.services.stream_manager._build_pipeline",
-        lambda _matcher: pipeline,
+        lambda _matcher, **_kwargs: pipeline,
     )
 
     await StreamManager().startup()
 
     assert warmed == ["detector", "extractor"]
+
+
+@pytest.mark.asyncio
+async def test_startup_uses_enrollment_service_for_stream_pipeline(monkeypatch):
+    service = SimpleNamespace(detector=object(), aligner=object(), extractor=object())
+    manager = StreamManager()
+    received = {}
+    pipeline = SimpleNamespace(
+        detector=SimpleNamespace(),
+        extractor=SimpleNamespace(),
+    )
+
+    def build_pipeline(_matcher, *, cv_service=None):
+        received["cv_service"] = cv_service
+        return pipeline
+
+    monkeypatch.setattr(
+        "app.services.stream_manager._build_pipeline",
+        build_pipeline,
+    )
+
+    await manager.startup(service)
+
+    assert received["cv_service"] is service
 
 
 @pytest.mark.asyncio
@@ -54,7 +78,7 @@ async def test_startup_fails_if_required_component_warmup_fails(monkeypatch):
     )
     monkeypatch.setattr(
         "app.services.stream_manager._build_pipeline",
-        lambda _matcher: pipeline,
+        lambda _matcher, **_kwargs: pipeline,
     )
 
     with pytest.raises(RuntimeError, match="detector.*failed warmup"):
@@ -128,6 +152,35 @@ async def test_detector_change_updates_state_after_rebuild(monkeypatch):
     assert messages[0]["type"] == "ack"
 
 
+@pytest.mark.asyncio
+async def test_detector_hot_swap_updates_shared_enrollment_service(monkeypatch):
+    manager = StreamManager()
+    service = SimpleNamespace(detector=object())
+    manager._cv_service = service
+    old_detector = object()
+    state = SimpleNamespace(
+        pipeline=SimpleNamespace(detector=old_detector),
+    )
+    new_detector = SimpleNamespace(warmup=lambda: None)
+    monkeypatch.setattr(
+        "app.services.enrollment._try_import_cv_core",
+        lambda: {"YoloFaceDetector": object},
+    )
+    monkeypatch.setattr(
+        "app.services.enrollment._build_detector",
+        lambda _core, **_kwargs: new_detector,
+    )
+
+    await manager._rebuild_pipeline_detector(
+        state,
+        "yolo26",
+        "yolo26n-face.pt",
+    )
+
+    assert state.pipeline.detector is new_detector
+    assert service.detector is new_detector
+
+
 def test_employee_matcher_matches_enrolled_embeddings():
     matcher = _EmployeeMatcher()
     employee = SimpleNamespace(
@@ -174,10 +227,10 @@ async def test_rate_limited_frame_is_dropped_without_backend_error():
 
 
 @pytest.mark.asyncio
-async def test_rate_limit_rejects_frames_faster_than_15_fps(monkeypatch):
+async def test_rate_limit_rejects_frames_faster_than_30_fps(monkeypatch):
     from app.config import settings
 
-    monkeypatch.setattr(settings, "max_stream_fps", 15)
+    monkeypatch.setattr(settings, "max_stream_fps", 30)
     manager = StreamManager()
     messages = []
 
@@ -187,7 +240,7 @@ async def test_rate_limit_rejects_frames_faster_than_15_fps(monkeypatch):
 
     state = SimpleNamespace(
         connection_id="test-connection",
-        last_frame_ts=time.monotonic() - (1.0 / 30.0),
+        last_frame_ts=time.monotonic() - (1.0 / 60.0),
         frame_queue=asyncio.Queue(),
         closed=False,
         ws=WebSocket(),
@@ -331,6 +384,42 @@ async def test_process_one_passes_precomputed_detections_to_pipeline(monkeypatch
 
     assert received["detections"] == [marker]
     assert messages[0]["type"] == "frame"
+
+
+@pytest.mark.asyncio
+async def test_detector_inference_failure_is_reported_to_stream_client(monkeypatch):
+    manager = StreamManager()
+    frame = np.zeros((2, 2, 3), dtype=np.uint8)
+    messages = []
+    state = SimpleNamespace(
+        closed=False,
+        connection_id="test-connection",
+        frame_queue=asyncio.Queue(),
+        pipeline=SimpleNamespace(
+            detector=SimpleNamespace(
+                detect=lambda _frame: (_ for _ in ()).throw(
+                    RuntimeError("model inference failed")
+                )
+            )
+        ),
+    )
+    await state.frame_queue.put(b"frame")
+
+    async def send_error(_state, code, message, **_kwargs):
+        messages.append({"code": code, "message": message})
+        state.closed = True
+
+    monkeypatch.setattr(manager, "_decode_frame", lambda _data: frame)
+    monkeypatch.setattr(manager, "_send_error", send_error)
+
+    await manager._detect_frames(state)
+
+    assert messages == [
+        {
+            "code": "detection_failed",
+            "message": "Face detection failed: model inference failed",
+        }
+    ]
 
 
 async def _noop_async():

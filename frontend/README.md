@@ -28,9 +28,9 @@ frontend/
 3. Use the **Input Source** toggle to pick *Live Camera* or *Upload Video*.
 4. Pick a **Strategy Mode** (Both / Strategy 1 / Strategy 2).
 5. In **Config**, select a detector and set the stream options. Open **Live**
-   and click **Start Stream** — the browser targets up to 15 FPS, but sends
-   only one frame at a time and waits for each backend response. Actual
-   throughput depends on detector processing speed and the server's 15 FPS cap.
+   and click **Start Stream** — the browser targets up to 30 FPS and allows
+   at most two frames in flight. Actual
+   throughput depends on detector processing speed and the server's 30 FPS cap.
 6. Use **Live** for the video and recent events, **Attendance Log** for
    searchable/exportable records, and **People** to enroll or remove employees.
    In People, select several clear photos of the same person; the backend
@@ -45,7 +45,7 @@ frontend/
 - **Live Camera** — uses `navigator.mediaDevices.getUserMedia`. A device picker
   appears after the first permission grant. Click *Start Camera* to begin.
 - **Upload Video** — pick an MP4/WebM/MOV file. Frames are extracted from a
-  hidden `<video>` element at a target of up to 15 FPS and sent as JPEG blobs. The next
+  hidden `<video>` element at a target of up to 30 FPS and sent as JPEG blobs. The next
   frame waits for backend processing to finish, so CPU-heavy processing
   naturally reduces the actual rate without building a backlog. Playback
   controls (play/pause/seek) appear below the preview. When the video ends,
@@ -73,7 +73,7 @@ on reconnect.
 - `{type: "config", threshold: 0.68}` — similarity threshold (0.5–0.9)
 - `{type: "config", liveness: true|false}` — toggle anti-spoof
 - `{type: "source", mode: "upload" | "camera"}` — informational source change
-- Binary JPEG `Blob` at a target of up to 15 FPS — `canvas.toBlob(..., 'image/jpeg', 0.7)`;
+- Binary JPEG `Blob` at a target of up to 30 FPS — `canvas.toBlob(..., 'image/jpeg', 0.7)`;
   the client waits for the corresponding server frame/error response before
   sending another
 
@@ -105,7 +105,7 @@ admin accounts.
 ## Features
 
 - **Auto-reconnect** WebSocket with exponential backoff (1s → 2s → 4s → 8s → 16s → 30s cap)
-- **Frame pacing** targets up to 15 FPS, with one frame in flight per WebSocket
+- **Frame pacing** targets up to 30 FPS, with at most two frames in flight per WebSocket
   connection; server rate cap and model latency determine actual CPU/GPU throughput
 - **Connection status pill** with pulsing animation (green/red/orange)
 - **Toast notifications** — stackable, color-coded, auto-dismiss after 4s

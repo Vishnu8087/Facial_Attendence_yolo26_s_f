@@ -112,7 +112,10 @@ def _try_import_pipeline() -> Any | None:
         return None
 
 
-def _build_pipeline(matcher: Any | None = None) -> Any | None:
+def _build_pipeline(
+    matcher: Any | None = None,
+    cv_service: Any | None = None,
+) -> Any | None:
     """Instantiate an AttendancePipeline with all CV components.
 
     Best-effort: returns None if the CV core isn't importable. In that
@@ -127,7 +130,7 @@ def _build_pipeline(matcher: Any | None = None) -> Any | None:
         from app.core.liveness import LivenessVerifier  # type: ignore
         from app.services.enrollment import EnrollmentService
 
-        cv_service = EnrollmentService()
+        cv_service = cv_service or EnrollmentService()
         if any(
             component is None
             for component in (cv_service.detector, cv_service.aligner, cv_service.extractor)
@@ -205,13 +208,18 @@ class StreamManager:
         # Single shared pipeline (one pipeline can serve many streams in
         # sequence; for higher throughput, instantiate one per stream).
         self._default_pipeline: Any | None = None
+        self._cv_service: Any | None = None
 
     # ----------------------------------------------------------------- #
     # Lifecycle
     # ----------------------------------------------------------------- #
-    async def startup(self) -> None:
-        """Pre-warm the default pipeline."""
-        self._default_pipeline = _build_pipeline(self._employee_matcher)
+    async def startup(self, cv_service: Any | None = None) -> None:
+        """Build the default pipeline and pre-warm its shared CV components."""
+        self._cv_service = cv_service
+        self._default_pipeline = _build_pipeline(
+            self._employee_matcher,
+            cv_service=cv_service,
+        )
         if self._default_pipeline is None:
             logger.warning("stream.startup.pipeline_unavailable")
         else:
@@ -490,6 +498,8 @@ class StreamManager:
             else:
                 # Pipeline doesn't expose detector attribute; rebuild from scratch
                 state.pipeline = _build_pipeline(self._employee_matcher)
+            if self._cv_service is not None:
+                self._cv_service.detector = new_detector
         except ImportError as exc:
             raise RuntimeError(
                 "CV core is unavailable; detector cannot be changed"
@@ -704,9 +714,22 @@ class StreamManager:
                     state, "unsupported_format", "Frame is neither JPEG nor PNG"
                 )
                 continue
-            detections = await loop.run_in_executor(
-                None, self._detect_frame, state.pipeline, frame
-            )
+            try:
+                detections = await loop.run_in_executor(
+                    None, self._detect_frame, state.pipeline, frame
+                )
+            except Exception as exc:
+                logger.exception(
+                    "stream.detect_frame.failed",
+                    connection_id=state.connection_id,
+                    error=str(exc),
+                )
+                await self._send_error(
+                    state,
+                    "detection_failed",
+                    f"Face detection failed: {exc}",
+                )
+                continue
             if state.extract_queue.full():
                 try:
                     state.extract_queue.get_nowait()
@@ -718,7 +741,7 @@ class StreamManager:
     def _detect_frame(self, pipeline: Any, frame: np.ndarray) -> list[Any]:
         """Serialize access to the shared detector while allowing downstream overlap."""
         with self._detector_lock:
-            return list(pipeline._safe_detect(frame))
+            return list(pipeline.detector.detect(frame))
 
     async def _process_detected_frames(self, state: ConnectionState) -> None:
         """Process frames after detection, preserving tracker and result ordering."""

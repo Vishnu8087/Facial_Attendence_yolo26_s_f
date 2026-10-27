@@ -222,15 +222,16 @@ class TestYoloFaceDetectorDetect:
         assert len(result) == 1
         assert result[0].landmarks.shape == (5, 2)
 
-    def test_predict_exception_returns_empty(self, yolo_detector_cls, sample_frame):
-        """A model.predict() crash shouldn't bubble up — return [] instead."""
+    def test_predict_exception_is_reported(self, yolo_detector_cls, sample_frame):
+        """A model.predict() failure is not misreported as a no-face result."""
         d = yolo_detector_cls()
         fake_model = MagicMock()
         fake_model.predict = MagicMock(side_effect=RuntimeError("OOM"))
         d._model = fake_model
         d._loaded = True
 
-        assert d.detect(sample_frame) == []
+        with pytest.raises(RuntimeError, match="YOLO26 detection inference failed"):
+            d.detect(sample_frame)
 
 
 # --------------------------------------------------------------------------- #

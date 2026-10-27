@@ -114,7 +114,7 @@ Permissions-Policy: camera=(self), microphone=(), geolocation=()
 |--------------|-----------------------------------------|
 | API          | 2 GiB memory, 2 CPU per pod (default).  |
 | Postgres     | `max_connections=100`, `shared_buffers=1GB`. |
-| WebSocket    | 15 FPS per connection, max 10 concurrent per IP. |
+| WebSocket    | 30 FPS per connection, max 10 concurrent per IP. |
 | Disk         | Read-only root FS in prod; logs to `emptyDir`. |
 
 ## Biometric data handling

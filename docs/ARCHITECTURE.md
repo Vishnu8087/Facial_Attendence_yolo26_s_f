@@ -342,7 +342,7 @@ skipped (per the orchestrator's spec in Task 0-amend).
 
 ### Backpressure
 
-- `MAX_STREAM_FPS` (default 15) caps the server-side processing rate.
+- `MAX_STREAM_FPS` (default 30) caps the server-side processing rate.
   Frames arriving faster are dropped at the WebSocket layer with a
   `{type: error, code: "rate_limited"}` notification.
 - The `AttendanceLogger` is fire-and-forget; it pushes to a queue and a

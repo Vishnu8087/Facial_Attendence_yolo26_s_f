@@ -108,7 +108,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     )
 
     # Stream manager — pre-warm the shared pipeline.
-    await stream_manager.startup()
+    await stream_manager.startup(enrollment_service)
     app.state.stream_manager = stream_manager
 
     # CV models "loaded" flag — for /readyz. We consider them loaded

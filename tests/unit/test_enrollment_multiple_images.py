@@ -63,6 +63,46 @@ async def test_image_enrollment_fails_when_cv_core_is_unavailable():
         await service._extract_embedding(np.zeros((32, 32, 3), dtype=np.uint8))
 
 
+@pytest.mark.asyncio
+async def test_image_enrollment_reports_detector_inference_failure():
+    class BrokenDetector:
+        def detect(self, _frame):
+            raise RuntimeError("model inference failed")
+
+    service = EnrollmentService(
+        detector=BrokenDetector(),
+        extractor=object(),
+    )
+
+    with pytest.raises(EnrollmentError, match="Face detection failed: model inference failed"):
+        await service._extract_embedding(np.zeros((32, 32, 3), dtype=np.uint8))
+
+
+@pytest.mark.asyncio
+async def test_image_enrollment_reports_embedding_inference_failure():
+    detection = SimpleNamespace(landmarks=np.zeros((5, 2), dtype=np.float32))
+
+    class Detector:
+        def detect(self, _frame):
+            return [detection]
+
+    class Extractor:
+        def extract(self, _face):
+            raise RuntimeError("ArcFace inference failed")
+
+    service = EnrollmentService(
+        detector=Detector(),
+        aligner=None,
+        extractor=Extractor(),
+    )
+
+    with pytest.raises(
+        EnrollmentError,
+        match="Face embedding extraction failed: ArcFace inference failed",
+    ):
+        await service._extract_embedding(np.zeros((32, 32, 3), dtype=np.uint8))
+
+
 def test_yolo_detector_failure_is_reported_instead_of_falling_back(monkeypatch):
     class MissingYolo:
         DEFAULT_MODEL = "missing.pt"

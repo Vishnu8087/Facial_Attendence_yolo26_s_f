@@ -177,7 +177,7 @@ class YoloFaceDetector:
             )
         except Exception as exc:
             logger.exception("yolo26.detect_failed err=%s", exc)
-            return []
+            raise RuntimeError("YOLO26 detection inference failed") from exc
 
         detections: List[DetectionResult] = []
         for r in results:

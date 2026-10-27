@@ -322,7 +322,10 @@ class EnrollmentService:
             )
 
         # 1. Detect
-        detections = self._safe_call(self.detector.detect, frame) or []
+        try:
+            detections = self.detector.detect(frame) or []
+        except Exception as exc:
+            raise EnrollmentError(f"Face detection failed: {exc}") from exc
         num_faces = len(detections)
         if num_faces == 0:
             return None, 0, None
@@ -337,7 +340,10 @@ class EnrollmentService:
                 face_crop = aligned
 
         # 3. Extract
-        emb = self._safe_call(self.extractor.extract, face_crop)
+        try:
+            emb = self.extractor.extract(face_crop)
+        except Exception as exc:
+            raise EnrollmentError(f"Face embedding extraction failed: {exc}") from exc
         if emb is None:
             return None, num_faces, face_crop
         emb = np.asarray(emb, dtype=np.float32).reshape(-1)
