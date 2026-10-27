@@ -47,3 +47,76 @@ def test_extractor_dtype_is_float32(sample_face_frame):
     extractor = _make_extractor_or_skip()
     emb = extractor.extract(sample_face_frame)
     assert emb.dtype == np.float32
+
+
+def test_extractor_warmup_executes_embedding_inference():
+    class Model:
+        def __init__(self):
+            self.batch_sizes = []
+
+        def get_feat(self, blob, *, session=None):
+            self.batch_sizes.append(len(blob))
+            return np.ones((len(blob), 512), dtype=np.float32)
+
+    extractor = FeatureExtractor(_verify_imports=False)
+    model = Model()
+    extractor._model = model
+    extractor._loaded = True
+
+    extractor.warmup()
+
+    assert model.batch_sizes == [1]
+
+
+def test_extract_multithreaded_uses_single_op_session_for_three_chips(monkeypatch):
+    from app.config import settings
+
+    class Model:
+        def __init__(self):
+            self.sessions = []
+
+        def get_feat(self, blob, *, session=None):
+            self.sessions.append(session)
+            return np.ones((len(blob), 512), dtype=np.float32)
+
+    extractor = FeatureExtractor(_verify_imports=False)
+    model = Model()
+    extractor._model = model
+    extractor._loaded = True
+    extractor.session_single_op = object()
+    monkeypatch.setattr(settings, "cpu_cores", 4)
+    monkeypatch.setattr(settings, "arcface_threading", "true")
+    monkeypatch.setattr(settings, "max_arcface_threads", 4)
+    chips = [np.zeros((112, 112, 3), dtype=np.uint8) for _ in range(3)]
+
+    embeddings = extractor.extract_multithreaded(chips)
+
+    assert embeddings.shape == (3, 512)
+    assert len(model.sessions) == 3
+    assert all(session is extractor.session_single_op for session in model.sessions)
+
+
+def test_extract_multithreaded_falls_back_to_batch_for_small_cpu(monkeypatch):
+    from app.config import settings
+
+    class Model:
+        def __init__(self):
+            self.batch_sizes = []
+
+        def get_feat(self, blob, *, session=None):
+            self.batch_sizes.append(len(blob))
+            return np.ones((len(blob), 512), dtype=np.float32)
+
+    extractor = FeatureExtractor(_verify_imports=False)
+    model = Model()
+    extractor._model = model
+    extractor._loaded = True
+    extractor.session_single_op = object()
+    monkeypatch.setattr(settings, "cpu_cores", 2)
+    monkeypatch.setattr(settings, "arcface_threading", "true")
+    chips = [np.zeros((112, 112, 3), dtype=np.uint8) for _ in range(3)]
+
+    embeddings = extractor.extract_multithreaded(chips)
+
+    assert embeddings.shape == (3, 512)
+    assert model.batch_sizes == [3]

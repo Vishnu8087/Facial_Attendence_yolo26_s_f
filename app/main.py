@@ -50,6 +50,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         env=os.environ.get("APP_ENV", "dev"),
         database_url=settings.database_url.replace(settings.db_password, "***") if settings.db_password else settings.database_url,
     )
+    logger.info(
+        "app.cpu.cores",
+        cores=os.cpu_count(),
+        arcface_threading=settings.arcface_threading,
+    )
 
     # Sentry (optional)
     if settings.sentry_dsn:

@@ -227,6 +227,7 @@ class AttendancePipeline:
         self,
         frame: np.ndarray,
         strategy: Optional[str] = None,
+        detections: Optional[List[DetectionResult]] = None,
     ) -> FrameResult:
         """Run one frame through the pipeline.
 
@@ -237,6 +238,9 @@ class AttendancePipeline:
         strategy:
             Pipeline strategy — ``"both"`` (default), ``"detection_only"``,
             or ``"tracking_only"``. Invalid values raise ``ValueError``.
+        detections:
+            Optional precomputed detector output used by the streaming
+            pipeline's parallel detection stage.
 
         Returns
         -------
@@ -256,7 +260,11 @@ class AttendancePipeline:
 
         # ---- 1. Detect (always) ----------------------------------------
         try:
-            detections: List[DetectionResult] = self._safe_detect(frame)
+            detections = (
+                self._safe_detect(frame)
+                if detections is None
+                else list(detections)
+            )
         except Exception as exc:
             logger.exception("pipeline.detect_failed err=%s", exc)
             return self._empty_result(frame, strat, error=f"detect_failed: {exc!r}")
@@ -352,6 +360,72 @@ class AttendancePipeline:
             num_logged=self._total_logged,
         )
 
+    def _maybe_reextract_tracks_and_match(
+        self,
+        frame: np.ndarray,
+        tracks: List[Track],
+        frame_idx: int,
+    ) -> List[Tuple[Optional[Dict[str, Any]], float]]:
+        """Batch align and extract uncached tracks without changing cache timing."""
+        if len(tracks) <= 2 or not callable(
+            getattr(type(self.extractor), "extract_multithreaded", None)
+        ):
+            return [
+                self._maybe_reextract_and_match(frame, track, frame_idx)
+                for track in tracks
+            ]
+
+        needs_extract: list[Track] = []
+        with self._lock:
+            for track in tracks:
+                last_extract = self._track_last_extract_frame.get(track.track_id)
+                if (
+                    last_extract is None
+                    or (frame_idx - last_extract) >= self.reverify_every_n_frames
+                ):
+                    needs_extract.append(track)
+        if len(needs_extract) <= 2:
+            return [
+                self._maybe_reextract_and_match(frame, track, frame_idx)
+                for track in tracks
+            ]
+
+        aligned_tracks: list[Track] = []
+        chips: list[np.ndarray] = []
+        for track in needs_extract:
+            try:
+                chips.append(self.aligner.align(frame, track.landmarks))
+                aligned_tracks.append(track)
+            except Exception as exc:
+                logger.debug("aligner.align raised for track %s: %s", track.track_id, exc)
+
+        try:
+            embeddings = self.extractor.extract_multithreaded(chips)
+            if len(embeddings) != len(aligned_tracks):
+                raise RuntimeError(
+                    "ArcFace returned a different number of embeddings than input chips"
+                )
+        except Exception as exc:
+            logger.warning("extractor.extract_multithreaded failed: %s", exc)
+            return [
+                self._maybe_reextract_and_match(frame, track, frame_idx)
+                for track in tracks
+            ]
+
+        precomputed = {
+            track.track_id: embedding
+            for track, embedding in zip(aligned_tracks, embeddings)
+        }
+        return [
+            self._maybe_reextract_and_match(
+                frame,
+                track,
+                frame_idx,
+                precomputed_embedding=precomputed.get(track.track_id),
+            )
+            for track in tracks
+        ]
+
     def _run_tracking_only(
         self,
         frame: np.ndarray,
@@ -404,10 +478,9 @@ class AttendancePipeline:
         tracks: List[TrackResult] = []
         annotated = np.asarray(frame).copy() if self.draw_annotations else np.asarray(frame)
 
-        for tr in tracked:
-            # ---- Per-track cached identity (re-extract every N frames) ----
-            identity, sim = self._maybe_reextract_and_match(frame, tr, frame_idx)
+        identities = self._maybe_reextract_tracks_and_match(frame, tracked, frame_idx)
 
+        for tr, (identity, sim) in zip(tracked, identities):
             # ---- Liveness ----
             liveness_result = self._verify_liveness(frame, tr.landmarks, tr.track_id)
             is_live = self._extract_is_live(liveness_result)
@@ -514,6 +587,8 @@ class AttendancePipeline:
         frame: np.ndarray,
         track: Track,
         frame_idx: int,
+        *,
+        precomputed_embedding: Optional[np.ndarray] = None,
     ) -> Tuple[Optional[Dict[str, Any]], float]:
         """Return cached identity for the track, re-extracting every N frames.
 
@@ -547,8 +622,11 @@ class AttendancePipeline:
         # Extract + match, then cache.
         identity, sim, emb = None, 0.0, None
         try:
-            aligned = self.aligner.align(frame, track.landmarks)
-            emb = self.extractor.extract(aligned)
+            if precomputed_embedding is None:
+                aligned = self.aligner.align(frame, track.landmarks)
+                emb = self.extractor.extract(aligned)
+            else:
+                emb = precomputed_embedding
             identity, sim = self._match(emb)
         except Exception as exc:
             logger.debug("extract+match raised for track %s: %s", tid, exc)

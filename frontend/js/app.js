@@ -34,7 +34,7 @@
     return `${proto}//${global.location.host}/ws/stream`;
   })();
 
-  /** Request 30 FPS; one-frame backpressure and the server cap limit actual throughput. */
+  /** Request up to 30 FPS; actual throughput depends on camera and inference speed. */
   const TARGET_FPS = 30;
   const FRAME_INTERVAL_MS = 1000 / TARGET_FPS;
 
@@ -248,7 +248,8 @@
       this._backoffMs = RECONNECT_INITIAL_MS;
       this._reconnectTimer = null;
       this._pendingConfig = null; // queued config while disconnected
-      this._framePending = false;
+      this._inFlightFrames = 0;
+      this._maxInFlightFrames = 2;
       this.onOpen = null;
       this.onClose = null;
       this.onMessage = null;
@@ -286,8 +287,13 @@
         if (typeof this.onMessage === 'function') {
           try {
             const data = typeof evt.data === 'string' ? JSON.parse(evt.data) : evt.data;
-            if (data && (data.type === 'frame' || data.type === 'error')) {
-              this._framePending = false;
+            if (
+              data &&
+              (data.type === 'frame' ||
+                data.type === 'frame_dropped' ||
+                data.type === 'error')
+            ) {
+              this._inFlightFrames = Math.max(0, this._inFlightFrames - 1);
             }
             this.onMessage(data);
           } catch (err) {
@@ -301,7 +307,7 @@
       };
 
       this.ws.onclose = () => {
-        this._framePending = false;
+        this._inFlightFrames = 0;
         ConnStatus.set('disconnected', 'Disconnected');
         if (typeof this.onClose === 'function') this.onClose();
         if (this._shouldReconnect) this._scheduleReconnect();
@@ -340,11 +346,11 @@
 
     /** Send a binary Blob (JPEG frame). */
     sendBlob(blob) {
-      if (this._framePending) return false;
+      if (this._inFlightFrames >= this._maxInFlightFrames) return false;
       if (this.ws && this.ws.readyState === WebSocket.OPEN) {
         try {
           this.ws.send(blob);
-          this._framePending = true;
+          this._inFlightFrames += 1;
           return true;
         } catch (err) {
           console.warn('[ws] blob send failed:', err);
@@ -605,7 +611,7 @@
           ]),
         ]),
         el('div', { class: 'feed-item__badges' }, [
-          el('span', { class: 'badge badge--sim' }, [`sim ${Number(ev.similarity ?? 0).toFixed(2)}`]),
+          el('span', { class: 'badge badge--sim' }, [`sim ${Number(ev.similarity ?? ev.score ?? 0).toFixed(2)}`]),
           el('div', { class: 'row', style: 'gap:4px;' }, [
             ev.track_id != null ? el('span', { class: 'badge badge--track' }, [`#${ev.track_id}`]) : null,
             ev.liveness_passed === true
@@ -1330,12 +1336,23 @@
       );
     }
 
-    /** Stop streaming frames. Keeps source active (camera still running, video still loaded). */
-    _stopStream() {
+    /** Stop streaming and release the webcam so its hardware indicator turns off. */
+    async _stopStream() {
       this.capture.stop();
       this.state.streaming = false;
       this._toggleStreamButtons(false);
-      Toast.info('Stream stopped', 'Frame capture paused.');
+      const releasedCamera = this.state.source === 'camera' && this.camera.isRunning;
+      if (releasedCamera) {
+        await this.camera.stop();
+        this._setCameraBtn(false);
+        this._setVideoStatus('idle', 'Idle');
+        this.overlay.classList.add('hidden');
+        this.placeholder.classList.remove('hidden');
+      }
+      Toast.info(
+        'Stream stopped',
+        releasedCamera ? 'Webcam released.' : 'Frame capture paused.'
+      );
     }
 
     _toggleStreamButtons(streaming) {
@@ -1349,7 +1366,10 @@
 
     async _toggleCamera() {
       if (this.camera.isRunning) {
-        if (this.state.streaming) this._stopStream();
+        if (this.state.streaming) {
+          await this._stopStream();
+          return;
+        }
         await this.camera.stop();
         this._setVideoStatus('idle', 'Idle');
         this.overlay.classList.add('hidden');
@@ -1533,9 +1553,9 @@
             this.placeholder.classList.add('hidden');
           }
           const detections = Array.isArray(msg.detections) ? msg.detections : [];
-          const latencyMs = Number(msg.latency_ms);
+          const streamFps = Number(msg.fps);
           Stats.update({
-            fps: Number.isFinite(latencyMs) && latencyMs > 0 ? 1000 / latencyMs : null,
+            fps: Number.isFinite(streamFps) ? streamFps : null,
             faces_detected: detections.length,
             identities_recognized: detections.filter((d) => d && d.identity).length,
             spoof_rejected: detections.filter((d) => d && d.is_real === false).length,

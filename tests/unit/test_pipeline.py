@@ -120,3 +120,56 @@ def test_frame_result_shape(
     result = pipe.process_frame(sample_frame, strategy="both")
     # FrameResult must at least be a structured object/dict with detections
     assert hasattr(result, "detections") or isinstance(result, dict)
+
+
+def test_track_cache_reextracts_on_existing_31st_frame(
+    sample_frame,
+    sample_face_frame,
+    mock_detector,
+    mock_extractor,
+    mock_tracker,
+    mock_liveness,
+):
+    pipe = _build_pipeline(mock_detector, mock_extractor, mock_tracker, mock_liveness)
+    pipe.aligner.align.return_value = sample_face_frame
+
+    for _ in range(30):
+        pipe.process_frame(sample_frame, strategy="both")
+
+    assert mock_extractor.extract.call_count == 2
+    assert pipe.reverify_every_n_frames == 30
+
+    pipe.process_frame(sample_frame, strategy="both")
+
+    assert mock_extractor.extract.call_count == 4
+    assert set(pipe._track_last_extract_frame.values()) == {31}
+
+
+def test_zero_faces_does_not_extract(
+    sample_frame, mock_detector, mock_extractor, mock_tracker, mock_liveness
+):
+    mock_detector.detect.return_value = []
+    pipe = _build_pipeline(mock_detector, mock_extractor, mock_tracker, mock_liveness)
+
+    result = pipe.process_frame(sample_frame, strategy="both")
+
+    assert result.tracks == []
+    mock_extractor.extract.assert_not_called()
+
+
+def test_one_face_uses_existing_sequential_extraction(
+    sample_frame,
+    sample_face_frame,
+    mock_detector,
+    mock_extractor,
+    mock_tracker,
+    mock_liveness,
+):
+    mock_detector.detect.return_value = mock_detector.detect.return_value[:1]
+    pipe = _build_pipeline(mock_detector, mock_extractor, mock_tracker, mock_liveness)
+    pipe.aligner.align.return_value = sample_face_frame
+
+    result = pipe.process_frame(sample_frame, strategy="both")
+
+    assert len(result.tracks) == 1
+    assert mock_extractor.extract.call_count == 1

@@ -13,10 +13,13 @@ from __future__ import annotations
 import logging
 import os
 import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import List, Optional, Sequence
 
 import numpy as np
 
+from app.config import settings
 from app.core.utils import cosine_similarity, select_onnx_runtime
 
 logger = logging.getLogger(__name__)
@@ -96,6 +99,8 @@ class FeatureExtractor:
         self._model: Optional[object] = None
         self._lock = threading.Lock()
         self._loaded = False
+        self.session_default: Optional[object] = None
+        self.session_single_op: Optional[object] = None
 
     # ------------------------------------------------------------------ #
     # Public API
@@ -124,7 +129,12 @@ class FeatureExtractor:
             return np.zeros(self.embedding_dim, dtype=np.float32)
         return batch[0]
 
-    def extract_batch(self, faces: Sequence[np.ndarray]) -> np.ndarray:
+    def extract_batch(
+        self,
+        faces: Sequence[np.ndarray],
+        *,
+        _session: Optional[object] = None,
+    ) -> np.ndarray:
         """Extract embeddings for a batch of aligned face chips.
 
         Parameters
@@ -147,7 +157,10 @@ class FeatureExtractor:
         blob = self._preprocess(faces)
         model = self._get_model()
         try:
-            embeddings = model.get_feat(blob)
+            if _session is None:
+                embeddings = model.get_feat(blob)
+            else:
+                embeddings = model.get_feat(blob, session=_session)
         except Exception as exc:
             raise RuntimeError("ArcFace embedding inference failed") from exc
 
@@ -168,6 +181,46 @@ class FeatureExtractor:
         embeddings = embeddings / norms_safe
         return embeddings.astype(np.float32, copy=False)
 
+    def extract_multithreaded(
+        self,
+        chips: Sequence[np.ndarray],
+        max_workers: Optional[int] = None,
+    ) -> np.ndarray:
+        """Extract aligned chips concurrently when the CPU and batch size justify it."""
+        if not chips:
+            return np.zeros((0, self.embedding_dim), dtype=np.float32)
+
+        self._get_model()
+        cores = settings.effective_cpu_cores
+        threading_enabled = (
+            cores >= 4
+            and settings.arcface_threading != "false"
+            and self.session_single_op is not None
+            and len(chips) > 2
+        )
+        if not threading_enabled:
+            return self.extract_batch(chips)
+
+        worker_limit = min(
+            len(chips),
+            cores,
+            settings.max_arcface_threads,
+            max_workers if max_workers is not None else settings.max_arcface_threads,
+        )
+        with ThreadPoolExecutor(
+            max_workers=worker_limit,
+            thread_name_prefix="arcface",
+        ) as executor:
+            embeddings = list(
+                executor.map(
+                    lambda chip: self.extract_batch(
+                        [chip], _session=self.session_single_op
+                    )[0],
+                    chips,
+                )
+            )
+        return np.stack(embeddings, axis=0).astype(np.float32, copy=False)
+
     def similarity(self, a: np.ndarray, b: np.ndarray) -> np.ndarray:
         """Cosine similarity between two (already-normalised) embeddings.
 
@@ -180,12 +233,20 @@ class FeatureExtractor:
         return self._loaded
 
     def warmup(self) -> None:
-        self._get_model()
+        """Load ArcFace and execute one embedding to initialize inference."""
+        started = time.perf_counter()
+        self.extract(np.zeros((self.input_size, self.input_size, 3), dtype=np.uint8))
+        logger.info(
+            "arcface.warmup.complete seconds=%.3f",
+            time.perf_counter() - started,
+        )
 
     def reset(self) -> None:
         with self._lock:
             self._model = None
             self._loaded = False
+            self.session_default = None
+            self.session_single_op = None
 
     # ------------------------------------------------------------------ #
     # Internals
@@ -231,6 +292,8 @@ class FeatureExtractor:
             if self._model is not None:
                 return self._model
             self._model = self._load_model()
+            self.session_default = getattr(self._model, "session_default", None)
+            self.session_single_op = getattr(self._model, "session_single_op", None)
             self._loaded = True
             return self._model
 
@@ -280,7 +343,15 @@ class FeatureExtractor:
                 f"from '{self.model_dir}': {exc}"
             ) from exc
 
-        return _InsightFaceRecAdapter(app)
+        threading_enabled = (
+            (not self.device or self.device.lower() == "cpu")
+            and settings.effective_cpu_cores >= 4
+            and settings.arcface_threading != "false"
+        )
+        return _InsightFaceRecAdapter(
+            app,
+            create_single_op_session=threading_enabled,
+        )
 
 
 class _InsightFaceRecAdapter:
@@ -293,7 +364,12 @@ class _InsightFaceRecAdapter:
     and call it directly.
     """
 
-    def __init__(self, app: object) -> None:
+    def __init__(
+        self,
+        app: object,
+        *,
+        create_single_op_session: bool = False,
+    ) -> None:
         self._app = app
         # Pluck the recognition model out of the app's internal list.
         self._rec = None
@@ -309,8 +385,39 @@ class _InsightFaceRecAdapter:
                 "ArcFace recognition model not found in the loaded pack"
             )
         self._rec = rec
+        self.session_default = getattr(rec, "session", None)
+        self.session_single_op = None
+        if create_single_op_session:
+            if self.session_default is None:
+                raise RuntimeError("ArcFace ONNX Runtime session is unavailable")
+            try:
+                import onnxruntime as ort  # type: ignore
 
-    def get_feat(self, blob: np.ndarray) -> np.ndarray:
+                session_options = ort.SessionOptions()
+                session_options.intra_op_num_threads = 1
+                session_options.inter_op_num_threads = 1
+                existing = self.session_default
+                provider_options = existing.get_provider_options()
+                providers = [
+                    (provider, provider_options.get(provider, {}))
+                    for provider in existing.get_providers()
+                ]
+                self.session_single_op = ort.InferenceSession(
+                    rec.model_file,
+                    sess_options=session_options,
+                    providers=providers,
+                )
+            except Exception as exc:
+                raise RuntimeError(
+                    "failed to create the single-thread ArcFace ONNX session"
+                ) from exc
+
+    def get_feat(
+        self,
+        blob: np.ndarray,
+        *,
+        session: Optional[object] = None,
+    ) -> np.ndarray:
         """Run the recognition model on a pre-aligned NCHW blob.
 
         The model's ``forward`` method applies its configured normalization
@@ -319,7 +426,12 @@ class _InsightFaceRecAdapter:
         forward = getattr(self._rec, "forward", None)
         if forward is None:
             raise RuntimeError("InsightFace recognition model does not expose forward()")
-        return forward(blob)
+        if session is None:
+            return forward(blob)
+        return session.run(
+            self._rec.output_names,
+            {self._rec.input_name: (blob - self._rec.input_mean) / self._rec.input_std},
+        )[0]
 
 
 __all__ = ["FeatureExtractor", "ExtractionResult"]

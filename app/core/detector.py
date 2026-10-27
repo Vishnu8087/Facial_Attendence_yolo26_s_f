@@ -202,8 +202,13 @@ class FaceDetector:
         return self._loaded
 
     def warmup(self) -> None:
-        """Force-load the model now (useful for pre-warming at startup)."""
-        self._get_model()
+        """Load the model and run a real inference before accepting frames."""
+        model = self._get_model()
+        frame = np.zeros((self.det_size, self.det_size, 3), dtype=np.uint8)
+        try:
+            model.get(frame)
+        except Exception as exc:
+            raise RuntimeError("InsightFace detector inference warmup failed") from exc
 
     def reset(self) -> None:
         """Release the loaded model (next ``detect`` re-loads)."""

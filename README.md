@@ -119,8 +119,10 @@ accepts a `strategy` argument with three modes:
 | `tracking_only`    |   ✅  |   ⚠️ |   ✅  |    ✅    |   ❌    |    ❌    | ❌  | Cheap motion tracking, no identity        |
 | `both` (default)   |   ✅  |   ✅  |   ✅  |    ✅    |   ✅*   |    ✅*   | ✅  | Best of both — extract only on track birth/cooldown |
 
-\* In `both` mode the extractor runs **once per track birth** (and again
-after the cooldown expires), not every frame.
+\* In `both` mode the extractor runs for a new track and re-extracts every
+30 processed frames; it does not wait for the attendance cooldown to expire.
+`detection_only` can log a matched identity without running liveness, so use
+`both` for normal attendance operation.
 
 ```
 Strategy "detection_only":
@@ -222,6 +224,8 @@ The system ships with **two interchangeable face detectors**. Set
 
 The detector and recognizer are separate stages. `buffalo_l` supplies the ArcFace recognizer in either mode; selecting SCRFD uses its `det_10g.onnx` detector as well. Switching YOLO26 and SCRFD does not change the recognizer or its embeddings. Both detectors emit the same `DetectionResult` shape (bbox + 5 landmarks + score), so the rest of the pipeline is unchanged.
 
+At application startup, the selected detector and ArcFace recognizer load and run a dummy inference. This moves model/runtime initialization off the first camera frame, but increases startup time; startup fails explicitly if either required model cannot warm up. The configured `MAX_STREAM_FPS=30` is an upper bound, not a throughput guarantee—actual FPS depends on detector inference speed, device, and frame size.
+
 **Download YOLO26-s and the `buffalo_l` recognizer pack** before starting a fresh setup:
 
 ```bash
@@ -278,9 +282,18 @@ All runtime config is driven by environment variables (see
 | `LIVENESS_MIN_BLINKS`          | `1`            | Min blinks in the rolling window to pass          |
 | `LIVENESS_WINDOW_SECONDS`      | `5`            | Rolling window for blink counting                 |
 | `MAX_STREAM_FPS`               | `15`           | Server-side rate cap on the WebSocket             |
+| `CPU_CORES`                    | `0`            | Logical CPU count override; `0` uses `os.cpu_count()` |
+| `ARCFACE_THREADING`             | `auto`         | Per-face ArcFace threading (`auto`, `true`, `false`) |
+| `MAX_ARCFACE_THREADS`           | `4`            | Maximum concurrent ArcFace calls                   |
 | `MAX_FRAME_WIDTH`              | `1280`         | Downscale frames wider than this before inference |
 | `LOG_LEVEL`                    | `INFO`         | `DEBUG` / `INFO` / `WARNING` / `ERROR`            |
 | `CORS_ORIGINS`                 | `*`            | Comma-separated allowed origins                   |
+
+ArcFace threading is used only when at least four cores are available and a
+frame has more than two uncached face tracks. The track embedding/identity
+cache remains enabled and re-verifies on its existing 30-frame interval.
+The WebSocket pipeline uses two bounded frame queues and allows up to two
+frames in flight so YOLO detection can overlap downstream processing.
 
 ---
 

@@ -58,7 +58,12 @@ def _try_import_cv_core() -> dict[str, Any]:
     return classes
 
 
-def _build_detector(cv_core: dict[str, Any]) -> Any | None:
+def _build_detector(
+    cv_core: dict[str, Any],
+    *,
+    backend: str | None = None,
+    model_name: str | None = None,
+) -> Any | None:
     """Construct the configured detector based on settings.detector_backend.
 
     Reads ``settings.detector_backend``:
@@ -66,8 +71,8 @@ def _build_detector(cv_core: dict[str, Any]) -> Any | None:
     * ``"insightface"``             → :class:`FaceDetector` (SCRFD)
     * ``"yolo26"``                  → :class:`YoloFaceDetector` (Ultralytics YOLO26-face)
     """
-    backend = getattr(settings, "detector_backend", "insightface").lower()
-    model_name = getattr(settings, "detector_model", "") or ""
+    backend = (backend or getattr(settings, "detector_backend", "insightface")).lower()
+    model_name = model_name or getattr(settings, "detector_model", "") or ""
     device = getattr(settings, "detector_device", "") or ""
     # Default device = cuda if gpu_enabled, else cpu
     if not device:

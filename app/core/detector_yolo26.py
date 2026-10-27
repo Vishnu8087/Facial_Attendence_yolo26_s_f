@@ -54,6 +54,7 @@ from __future__ import annotations
 import logging
 import os
 import threading
+import time
 from pathlib import Path
 from typing import List, Optional
 
@@ -263,8 +264,25 @@ class YoloFaceDetector:
         return self._loaded
 
     def warmup(self) -> None:
-        """Force-load the model now (useful for pre-warming at startup)."""
-        self._get_model()
+        """Load the model and run a real inference before accepting frames."""
+        model = self._get_model()
+        frame = np.zeros((self.imgsz, self.imgsz, 3), dtype=np.uint8)
+        started = time.perf_counter()
+        try:
+            model.predict(
+                frame,
+                conf=self.conf_threshold,
+                iou=self.iou_threshold,
+                imgsz=self.imgsz,
+                device=self.device,
+                verbose=False,
+            )
+        except Exception as exc:
+            raise RuntimeError("YOLO26 inference warmup failed") from exc
+        logger.info(
+            "yolo26.warmup.complete seconds=%.3f",
+            time.perf_counter() - started,
+        )
 
     def reset(self) -> None:
         """Release the loaded model (next ``detect`` re-loads)."""

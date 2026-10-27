@@ -8,7 +8,12 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from app.services.stream_manager import StreamManager, _EmployeeMatcher, _build_pipeline
+from app.services.stream_manager import (
+    ConnectionState,
+    StreamManager,
+    _EmployeeMatcher,
+    _build_pipeline,
+)
 
 
 def test_default_stream_pipeline_builds_with_configured_detector():
@@ -19,6 +24,108 @@ def test_default_stream_pipeline_builds_with_configured_detector():
     assert pipeline.detector is not None
     assert pipeline.liveness is not None
     assert pipeline.matcher is matcher
+
+
+@pytest.mark.asyncio
+async def test_startup_warms_detector_and_extractor(monkeypatch):
+    warmed = []
+    pipeline = SimpleNamespace(
+        detector=SimpleNamespace(warmup=lambda: warmed.append("detector")),
+        extractor=SimpleNamespace(warmup=lambda: warmed.append("extractor")),
+    )
+    monkeypatch.setattr(
+        "app.services.stream_manager._build_pipeline",
+        lambda _matcher: pipeline,
+    )
+
+    await StreamManager().startup()
+
+    assert warmed == ["detector", "extractor"]
+
+
+@pytest.mark.asyncio
+async def test_startup_fails_if_required_component_warmup_fails(monkeypatch):
+    def fail_warmup():
+        raise RuntimeError("model failed")
+
+    pipeline = SimpleNamespace(
+        detector=SimpleNamespace(warmup=fail_warmup),
+        extractor=SimpleNamespace(warmup=lambda: None),
+    )
+    monkeypatch.setattr(
+        "app.services.stream_manager._build_pipeline",
+        lambda _matcher: pipeline,
+    )
+
+    with pytest.raises(RuntimeError, match="detector.*failed warmup"):
+        await StreamManager().startup()
+
+
+@pytest.mark.asyncio
+async def test_startup_detector_config_keeps_preloaded_model(monkeypatch):
+    manager = StreamManager()
+    messages = []
+
+    class WebSocket:
+        async def send_json(self, payload):
+            messages.append(payload)
+
+    state = SimpleNamespace(
+        detector_backend="yolo26",
+        detector_model="yolo26s-face.pt",
+        ws=WebSocket(),
+        closed=False,
+    )
+    monkeypatch.setattr(
+        manager,
+        "_rebuild_pipeline_detector",
+        lambda *_args: pytest.fail("unchanged detector should not be rebuilt"),
+    )
+
+    await manager._handle_config(
+        state,
+        {"detector": {"backend": "yolo26", "model": "yolo26s-face.pt"}},
+    )
+
+    assert messages == [
+        {
+            "type": "ack",
+            "for": "config",
+            "detector": {"backend": "yolo26", "model": "yolo26s-face.pt"},
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_detector_change_updates_state_after_rebuild(monkeypatch):
+    manager = StreamManager()
+    messages = []
+
+    class WebSocket:
+        async def send_json(self, payload):
+            messages.append(payload)
+
+    state = SimpleNamespace(
+        detector_backend="yolo26",
+        detector_model="yolo26s-face.pt",
+        ws=WebSocket(),
+        closed=False,
+    )
+    rebuilt = []
+
+    async def rebuild(_state, backend, model):
+        rebuilt.append((backend, model))
+
+    monkeypatch.setattr(manager, "_rebuild_pipeline_detector", rebuild)
+
+    await manager._handle_config(
+        state,
+        {"detector": {"backend": "yolo26", "model": "yolo26n-face.pt"}},
+    )
+
+    assert rebuilt == [("yolo26", "yolo26n-face.pt")]
+    assert state.detector_model == "yolo26n-face.pt"
+    assert messages[0]["type"] == "ack"
 
 
 def test_employee_matcher_matches_enrolled_embeddings():
@@ -46,15 +153,24 @@ def test_employee_matcher_matches_enrolled_embeddings():
 @pytest.mark.asyncio
 async def test_rate_limited_frame_is_dropped_without_backend_error():
     manager = StreamManager()
+    messages = []
+
+    class WebSocket:
+        async def send_json(self, message):
+            messages.append(message)
+
     state = SimpleNamespace(
         connection_id="test-connection",
         last_frame_ts=time.monotonic(),
         frame_queue=asyncio.Queue(),
+        closed=False,
+        ws=WebSocket(),
     )
 
     await manager.handle_binary(state, b"frame")
 
     assert state.frame_queue.empty()
+    assert messages == [{"type": "frame_dropped"}]
 
 
 @pytest.mark.asyncio
@@ -95,3 +211,101 @@ async def test_process_one_serializes_numpy_frame_without_boolean_coercion(monke
 
     assert messages[0]["type"] == "frame"
     assert messages[0]["image"] == "encoded"
+    assert messages[0]["fps"] == 0.0
+
+
+@pytest.mark.asyncio
+async def test_reported_fps_uses_time_between_completed_frames(monkeypatch):
+    manager = StreamManager()
+    frame = np.zeros((2, 2, 3), dtype=np.uint8)
+    messages = []
+    tick = iter([1.0, 1.0, 1.05, 1.05])
+
+    class WebSocket:
+        async def send_json(self, message):
+            messages.append(message)
+
+    state = SimpleNamespace(
+        pipeline=None,
+        current_strategy="both",
+        frame_counter=0,
+        closed=False,
+        ws=WebSocket(),
+        last_result_ts=0.0,
+    )
+    monkeypatch.setattr(manager, "_decode_frame", lambda _data: frame)
+    monkeypatch.setattr(manager, "_encode_frame", lambda image: "encoded")
+    monkeypatch.setattr(
+        "app.services.stream_manager.time",
+        SimpleNamespace(monotonic=lambda: next(tick)),
+    )
+
+    await manager._process_one(state, b"frame")
+    await manager._process_one(state, b"frame")
+
+    assert messages[0]["fps"] == 0.0
+    assert messages[1]["fps"] == pytest.approx(20.0)
+
+
+def test_connection_uses_bounded_stage_queues():
+    state = ConnectionState(
+        ws=SimpleNamespace(),
+        connection_id="test-connection",
+        pipeline=None,
+        attendance_logger=SimpleNamespace(),
+    )
+
+    assert state.frame_queue.maxsize == 2
+    assert state.extract_queue.maxsize == 2
+
+
+@pytest.mark.asyncio
+async def test_process_one_passes_precomputed_detections_to_pipeline(monkeypatch):
+    manager = StreamManager()
+    frame = np.zeros((2, 2, 3), dtype=np.uint8)
+    marker = object()
+    received = {}
+    messages = []
+
+    class Pipeline:
+        def process_frame(self, frame, strategy, *, detections=None):
+            received["detections"] = detections
+            return SimpleNamespace(
+                annotated_frame=frame,
+                tracks=[],
+                detections=[],
+                attendance_events=[],
+            )
+
+    class WebSocket:
+        async def send_json(self, message):
+            messages.append(message)
+
+    state = SimpleNamespace(
+        pipeline=Pipeline(),
+        current_strategy="both",
+        frame_counter=0,
+        closed=False,
+        ws=WebSocket(),
+    )
+    monkeypatch.setattr(manager, "_encode_frame", lambda image: "encoded")
+    monkeypatch.setattr(manager, "_refresh_employee_matcher", _noop_async)
+    monkeypatch.setattr(
+        manager,
+        "_unpack_result",
+        lambda result, _state: (result.annotated_frame, [], []),
+    )
+
+    await manager._process_one(
+        state,
+        b"",
+        decoded_frame=frame,
+        precomputed_detections=[marker],
+    )
+
+    assert received["detections"] == [marker]
+    assert messages[0]["type"] == "frame"
+
+
+async def _noop_async():
+    return None

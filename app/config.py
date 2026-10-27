@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import Field, field_validator
+from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # --------------------------------------------------------------------------- #
@@ -141,13 +141,34 @@ class Settings(BaseSettings):
     liveness_enabled: bool = True
     liveness_min_score: float = 0.5
     default_strategy: str = "both"  # both | detection_only | tracking_only
+    cpu_cores: int = Field(
+        0,
+        validation_alias=AliasChoices("CPU_CORES", "CV_CPU_CORES"),
+        description="CPU cores available to inference; 0 detects via os.cpu_count().",
+    )
+    arcface_threading: str = Field(
+        "auto",
+        validation_alias=AliasChoices("ARCFACE_THREADING", "CV_ARCFACE_THREADING"),
+        description="ArcFace per-face threading mode: auto, true, or false.",
+    )
+    max_arcface_threads: int = Field(
+        4,
+        validation_alias=AliasChoices("MAX_ARCFACE_THREADS", "CV_MAX_ARCFACE_THREADS"),
+        description="Maximum concurrent ArcFace inference calls.",
+    )
 
     # ----- Streams / WebSocket -----
     max_cameras: int = 32
     ws_max_queue: int = 128
     ws_heartbeat_interval: int = 5
     stream_frame_timeout: int = 30
-    max_stream_fps: int = 15
+    max_stream_fps: int = Field(
+        30,
+        validation_alias=AliasChoices(
+            "MAX_STREAM_FPS",
+            "STREAMS_MAX_STREAM_FPS",
+        ),
+    )
     max_frame_bytes: int = 2 * 1024 * 1024  # 2 MB
 
     # ----- API -----
@@ -189,6 +210,35 @@ class Settings(BaseSettings):
             )
         return v_lower
 
+    @field_validator("arcface_threading")
+    @classmethod
+    def _validate_arcface_threading(cls, v: str) -> str:
+        value = v.lower()
+        if value not in {"auto", "true", "false"}:
+            raise ValueError("arcface_threading must be one of 'auto', 'true', or 'false'")
+        return value
+
+    @field_validator("cpu_cores")
+    @classmethod
+    def _validate_cpu_cores(cls, v: int) -> int:
+        if v < 0:
+            raise ValueError("cpu_cores must be 0 (auto) or a positive integer")
+        return v
+
+    @field_validator("max_arcface_threads")
+    @classmethod
+    def _validate_max_arcface_threads(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("max_arcface_threads must be at least 1")
+        return v
+
+    @field_validator("max_stream_fps")
+    @classmethod
+    def _validate_max_stream_fps(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("max_stream_fps must be at least 1")
+        return v
+
     @property
     def cors_origin_list(self) -> list[str]:
         """CORS origins as a list. ``"*"`` is preserved verbatim."""
@@ -197,6 +247,11 @@ class Settings(BaseSettings):
         if self.cors_origins.strip() == "*":
             return ["*"]
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+
+    @property
+    def effective_cpu_cores(self) -> int:
+        """Return the configured core count, or the logical CPU count when auto."""
+        return self.cpu_cores or os.cpu_count() or 1
 
     @property
     def project_root(self) -> Path:

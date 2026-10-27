@@ -253,7 +253,7 @@ class TestYoloFaceDetectorLifecycle:
         assert d.is_loaded() is False
 
     def test_warmup_loads_model(self, yolo_detector_cls, fake_ultralytics_module):
-        """warmup() should call _get_model() which loads via ultralytics.YOLO()."""
+        """warmup loads the model and executes a forward inference."""
         _, fake_yolo_cls = fake_ultralytics_module
         fake_instance = MagicMock()
         fake_yolo_cls.return_value = fake_instance
@@ -263,3 +263,17 @@ class TestYoloFaceDetectorLifecycle:
         assert d.is_loaded() is True
         fake_yolo_cls.assert_called_once_with(d._resolved_path)
         fake_instance.to.assert_called_once_with("cpu")
+        fake_instance.predict.assert_called_once()
+        frame = fake_instance.predict.call_args.args[0]
+        assert frame.shape == (d.imgsz, d.imgsz, 3)
+        assert frame.dtype == np.uint8
+
+    def test_warmup_raises_when_inference_fails(self, yolo_detector_cls):
+        d = yolo_detector_cls()
+        model = MagicMock()
+        model.predict.side_effect = RuntimeError("inference failed")
+        d._model = model
+        d._loaded = True
+
+        with pytest.raises(RuntimeError, match="inference warmup failed"):
+            d.warmup()

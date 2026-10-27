@@ -166,13 +166,20 @@ class ConnectionState:
     liveness_enabled: bool = True
     source_mode: str = "camera"  # upload | camera
     # Detector hot-swap state — updated by `{"type":"config","detector":{...}}` messages
-    detector_backend: str = "yolo26"        # insightface | yolo26
-    detector_model: str = "yolo26s-face.pt"  # pack name or .pt filename
-    frame_queue: asyncio.Queue[bytes] = field(default_factory=asyncio.Queue)
+    detector_backend: str = settings.detector_backend
+    detector_model: str = settings.detector_model
+    frame_queue: asyncio.Queue[bytes] = field(
+        default_factory=lambda: asyncio.Queue(maxsize=2)
+    )
+    extract_queue: asyncio.Queue[tuple[np.ndarray, list[Any]]] = field(
+        default_factory=lambda: asyncio.Queue(maxsize=2)
+    )
     last_frame_ts: float = 0.0
+    last_result_ts: float = 0.0
     frame_counter: int = 0
     task: asyncio.Task[None] | None = None
     closed: bool = False
+    send_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     @property
     def effective_threshold(self) -> float:
@@ -192,6 +199,7 @@ class StreamManager:
         self._employee_matcher = _EmployeeMatcher()
         self._matcher_refresh_lock = asyncio.Lock()
         self._matcher_refreshed_at = 0.0
+        self._detector_lock = threading.Lock()
         # Single shared attendance logger (cooldown cache) across streams.
         self.attendance_logger = AttendanceLogger()
         # Single shared pipeline (one pipeline can serve many streams in
@@ -207,6 +215,21 @@ class StreamManager:
         if self._default_pipeline is None:
             logger.warning("stream.startup.pipeline_unavailable")
         else:
+            for name in ("detector", "extractor"):
+                component = getattr(self._default_pipeline, name, None)
+                warmup = getattr(component, "warmup", None)
+                if callable(warmup):
+                    try:
+                        await asyncio.to_thread(warmup)
+                    except Exception as exc:
+                        logger.exception(
+                            "stream.startup.component_warmup_failed",
+                            component=name,
+                            error=str(exc),
+                        )
+                        raise RuntimeError(
+                            f"Required stream component '{name}' failed warmup"
+                        ) from exc
             logger.info("stream.startup.pipeline_ready")
 
     async def shutdown(self) -> None:
@@ -320,12 +343,15 @@ class StreamManager:
                 connection_id=state.connection_id,
                 max_fps=settings.max_stream_fps,
             )
+            await self._send_json(state, {"type": "frame_dropped"})
             return
         state.last_frame_ts = now
         # Drop oldest if queue is full (backpressure).
-        if state.frame_queue.qsize() >= settings.ws_max_queue:
+        queue_limit = state.frame_queue.maxsize or settings.ws_max_queue
+        if state.frame_queue.qsize() >= queue_limit:
             try:
                 state.frame_queue.get_nowait()
+                await self._send_json(state, {"type": "frame_dropped"})
             except asyncio.QueueEmpty:
                 pass
         await state.frame_queue.put(data)
@@ -389,13 +415,26 @@ class StreamManager:
             if not model:
                 await self._send_error(state, "invalid_detector", "detector.model is required")
                 return
-            # Apply the change to per-connection state
-            state.detector_backend = backend
-            state.detector_model = model
-            # Hot-swap the detector on the active pipeline (tracker + liveness
-            # state are preserved — only the detector instance is replaced).
+            # The frontend resends its selected detector when a stream starts.
+            # Keep the warmed detector instance when the selection is unchanged.
+            if (
+                backend == state.detector_backend
+                and model == state.detector_model
+            ):
+                await self._send_json(
+                    state,
+                    {
+                        "type": "ack",
+                        "for": "config",
+                        "detector": {"backend": backend, "model": model},
+                    },
+                )
+                return
+
             try:
-                await self._rebuild_pipeline_detector(state)
+                await self._rebuild_pipeline_detector(state, backend, model)
+                state.detector_backend = backend
+                state.detector_model = model
                 await self._send_json(
                     state,
                     {"type": "ack", "for": "config",
@@ -412,7 +451,12 @@ class StreamManager:
                     state, "detector_switch_failed", f"failed to switch detector: {exc}"
                 )
 
-    async def _rebuild_pipeline_detector(self, state: ConnectionState) -> None:
+    async def _rebuild_pipeline_detector(
+        self,
+        state: ConnectionState,
+        backend: str,
+        model: str,
+    ) -> None:
         """Hot-swap the detector on the active pipeline.
 
         Tracker state, liveness history (blink counters, head-pose deques),
@@ -421,14 +465,23 @@ class StreamManager:
         of any in-progress subjects.
         """
         if state.pipeline is None:
-            return
+            raise RuntimeError(
+                "cannot change detector because the stream pipeline is unavailable"
+            )
         # Import lazily so the module is importable in test envs without CV core
         try:
             from app.services.enrollment import _try_import_cv_core, _build_detector
             cv_core = _try_import_cv_core()
-            new_detector = _build_detector(cv_core)
+            new_detector = _build_detector(
+                cv_core,
+                backend=backend,
+                model_name=model,
+            )
             if new_detector is None:
                 raise RuntimeError("could not build new detector (CV core not available)")
+            warmup = getattr(new_detector, "warmup", None)
+            if callable(warmup):
+                await asyncio.to_thread(warmup)
             # Hot-swap detector on the existing pipeline
             if hasattr(state.pipeline, "detector"):
                 state.pipeline.detector = new_detector
@@ -437,9 +490,10 @@ class StreamManager:
             else:
                 # Pipeline doesn't expose detector attribute; rebuild from scratch
                 state.pipeline = _build_pipeline(self._employee_matcher)
-        except ImportError:
-            # CV core not available — nothing to do, pipeline runs in mock mode
-            pass
+        except ImportError as exc:
+            raise RuntimeError(
+                "CV core is unavailable; detector cannot be changed"
+            ) from exc
 
     async def _handle_source(self, state: ConnectionState, message: dict[str, Any]) -> None:
         mode = message.get("mode")
@@ -583,7 +637,8 @@ class StreamManager:
                 # Set the camera_id so attendance logs reference it
                 state.active_camera_id = camera_id
                 # Drop oldest if queue full
-                if state.frame_queue.qsize() >= settings.ws_max_queue:
+                queue_limit = state.frame_queue.maxsize or settings.ws_max_queue
+                if state.frame_queue.qsize() >= queue_limit:
                     try:
                         state.frame_queue.get_nowait()
                     except asyncio.QueueEmpty:
@@ -603,26 +658,95 @@ class StreamManager:
     # Per-connection frame processor
     # ----------------------------------------------------------------- #
     async def _run(self, state: ConnectionState) -> None:
-        """Background task: drain the frame queue and process each frame."""
+        """Run frame detection and downstream processing as bounded stages."""
         try:
-            while not state.closed:
-                # Wait for the next frame (with a heartbeat so we can
-                # react to closure promptly).
-                try:
-                    data = await asyncio.wait_for(state.frame_queue.get(), timeout=1.0)
-                except asyncio.TimeoutError:
-                    continue
-                await self._process_one(state, data)
+            if state.pipeline is None or not hasattr(state.pipeline, "detector"):
+                await self._run_serial(state)
+                return
+
+            detect_task = asyncio.create_task(self._detect_frames(state))
+            process_task = asyncio.create_task(self._process_detected_frames(state))
+            try:
+                await asyncio.gather(detect_task, process_task)
+            finally:
+                for task in (detect_task, process_task):
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(
+                    detect_task, process_task, return_exceptions=True
+                )
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # pragma: no cover
             logger.exception("stream.runner.crashed", connection_id=state.connection_id, error=str(exc))
             await self._send_error(state, "internal_error", str(exc), fatal=True)
 
-    async def _process_one(self, state: ConnectionState, data: bytes) -> None:
-        """Decode, process, and emit results for a single binary frame."""
+    async def _run_serial(self, state: ConnectionState) -> None:
+        """Process frames serially when a detector pipeline is unavailable."""
+        while not state.closed:
+            try:
+                data = await asyncio.wait_for(state.frame_queue.get(), timeout=1.0)
+            except asyncio.TimeoutError:
+                continue
+            await self._process_one(state, data)
+
+    async def _detect_frames(self, state: ConnectionState) -> None:
+        """Run detector inference in a worker thread and enqueue bounded results."""
+        loop = asyncio.get_running_loop()
+        while not state.closed:
+            try:
+                data = await asyncio.wait_for(state.frame_queue.get(), timeout=1.0)
+            except asyncio.TimeoutError:
+                continue
+            frame = self._decode_frame(data)
+            if frame is None:
+                await self._send_error(
+                    state, "unsupported_format", "Frame is neither JPEG nor PNG"
+                )
+                continue
+            detections = await loop.run_in_executor(
+                None, self._detect_frame, state.pipeline, frame
+            )
+            if state.extract_queue.full():
+                try:
+                    state.extract_queue.get_nowait()
+                    await self._send_json(state, {"type": "frame_dropped"})
+                except asyncio.QueueEmpty:
+                    pass
+            await state.extract_queue.put((frame, detections))
+
+    def _detect_frame(self, pipeline: Any, frame: np.ndarray) -> list[Any]:
+        """Serialize access to the shared detector while allowing downstream overlap."""
+        with self._detector_lock:
+            return list(pipeline._safe_detect(frame))
+
+    async def _process_detected_frames(self, state: ConnectionState) -> None:
+        """Process frames after detection, preserving tracker and result ordering."""
+        while not state.closed:
+            try:
+                frame, detections = await asyncio.wait_for(
+                    state.extract_queue.get(), timeout=1.0
+                )
+            except asyncio.TimeoutError:
+                continue
+            await self._process_one(
+                state,
+                b"",
+                decoded_frame=frame,
+                precomputed_detections=detections,
+            )
+
+    async def _process_one(
+        self,
+        state: ConnectionState,
+        data: bytes,
+        *,
+        decoded_frame: np.ndarray | None = None,
+        precomputed_detections: list[Any] | None = None,
+    ) -> None:
+        """Decode, process, and emit results for a single frame."""
         t0 = time.monotonic()
-        frame = self._decode_frame(data)
+        frame = decoded_frame if decoded_frame is not None else self._decode_frame(data)
         if frame is None:
             await self._send_error(state, "unsupported_format", "Frame is neither JPEG nor PNG")
             return
@@ -633,13 +757,16 @@ class StreamManager:
         attendance_events: list[dict[str, Any]] = []
 
         if state.pipeline is None:
-            # CV core missing — emit a stub frame event so the client
-            # gets a response (used in tests / before model pre-warm).
             annotated_frame = frame
         else:
             try:
                 await self._refresh_employee_matcher()
-                result = await self._run_pipeline(state.pipeline, frame, strategy)
+                result = await self._run_pipeline(
+                    state.pipeline,
+                    frame,
+                    strategy,
+                    detections=precomputed_detections,
+                )
                 annotated_frame, detections, attendance_events = self._unpack_result(
                     result, state
                 )
@@ -651,12 +778,19 @@ class StreamManager:
                 await self._send_error(state, "pipeline_error", str(exc))
                 return
 
-        # Encode the annotated frame as JPEG → base64.
         image_b64 = self._encode_frame(
             annotated_frame if annotated_frame is not None else frame
         )
         state.frame_counter += 1
-        latency_ms = (time.monotonic() - t0) * 1000.0
+        completed_at = time.monotonic()
+        latency_ms = (completed_at - t0) * 1000.0
+        last_result_ts = getattr(state, "last_result_ts", 0.0)
+        delivered_fps = (
+            1.0 / (completed_at - last_result_ts)
+            if last_result_ts > 0
+            else 0.0
+        )
+        state.last_result_ts = completed_at
 
         frames_processed_total.labels(strategy=strategy).inc()
         frame_processing_seconds.labels(strategy=strategy).observe(latency_ms / 1000.0)
@@ -672,11 +806,11 @@ class StreamManager:
                 "strategy": strategy,
                 "detections": detections,
                 "latency_ms": round(latency_ms, 2),
+                "fps": round(delivered_fps, 2),
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             },
         )
 
-        # Broadcast any attendance events.
         for evt in attendance_events:
             await self._send_json(state, {"type": "attendance", **evt})
             await self.broadcast_event({"type": "attendance", **evt})
@@ -712,9 +846,23 @@ class StreamManager:
             except Exception:
                 logger.exception("stream.matcher.refresh_failed")
 
-    async def _run_pipeline(self, pipeline: Any, frame: np.ndarray, strategy: str) -> Any:
+    async def _run_pipeline(
+        self,
+        pipeline: Any,
+        frame: np.ndarray,
+        strategy: str,
+        *,
+        detections: list[Any] | None = None,
+    ) -> Any:
         """Run ``pipeline.process_frame`` in a thread executor (it's sync)."""
         loop = asyncio.get_running_loop()
+        if detections is not None:
+            return await loop.run_in_executor(
+                None,
+                lambda: pipeline.process_frame(
+                    frame, strategy=strategy, detections=detections
+                ),
+            )
         return await loop.run_in_executor(
             None, lambda: pipeline.process_frame(frame, strategy=strategy)
         )
@@ -925,6 +1073,17 @@ class StreamManager:
     async def _send_json(self, state: ConnectionState, payload: dict[str, Any]) -> None:
         if state.closed:
             return
+        send_lock = getattr(state, "send_lock", None)
+        if send_lock is None:
+            await self._send_json_unlocked(state, payload)
+            return
+        async with send_lock:
+            if not state.closed:
+                await self._send_json_unlocked(state, payload)
+
+    async def _send_json_unlocked(
+        self, state: ConnectionState, payload: dict[str, Any]
+    ) -> None:
         try:
             await state.ws.send_json(payload)
         except Exception as exc:
