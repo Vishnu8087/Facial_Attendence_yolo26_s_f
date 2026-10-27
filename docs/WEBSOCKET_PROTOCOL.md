@@ -192,7 +192,7 @@ event (and optionally an [`attendance`](#attendance) event).
 - Max size: **2 MB** (≈ a 1280×720 JPEG at quality 80).
 - Max FPS: `MAX_STREAM_FPS` (default 15). Frames arriving faster are
   silently dropped and logged at debug level. The dashboard targets up to
-  30 FPS but sends only one frame at a time, waiting for each processed-frame
+  15 FPS but sends only one frame at a time, waiting for each processed-frame
   response; actual throughput is bounded by server processing and its FPS cap.
 - Format detection by magic bytes (`\xFF\xD8\xFF` for JPEG,
   `\x89PNG\r\n\x1a\n` for PNG).
@@ -364,7 +364,7 @@ violation).
 
 - **Per-connection FPS**: capped at `MAX_STREAM_FPS` (default 15).
   Excess frames are dropped silently and recorded at debug level. The
-  dashboard targets up to 30 FPS and allows only one unacknowledged frame
+  dashboard targets up to 15 FPS and allows only one unacknowledged frame
   per connection, so model latency naturally applies backpressure.
 - **Per-IP connections**: capped at 10 concurrent WS connections.
 - **Per-frame size**: capped at 2 MB.

@@ -599,7 +599,7 @@ class StreamManager:
         Auto-reconnects on stream hiccups (RTSP streams can drop periodically).
         """
         import cv2
-        frame_interval = 1.0 / 15.0  # cap at 15 FPS
+        frame_interval = 1.0 / max(1, settings.max_stream_fps)
         last_frame_ts = 0.0
         try:
             while not state.closed and cap is not None and cap.isOpened():
@@ -624,7 +624,7 @@ class StreamManager:
                     )
                     break
 
-                # Throttle to ~15 FPS
+                # Throttle to the configured stream FPS cap.
                 now = time.time()
                 if now - last_frame_ts < frame_interval:
                     await asyncio.sleep(frame_interval - (now - last_frame_ts))

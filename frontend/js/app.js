@@ -3,7 +3,7 @@
  * @description Main controller for the FaceTrack Attendance System dashboard.
  *   Owns:
  *     · WebSocket connection (auto-reconnect w/ exponential backoff, cap 30s)
- *     · Frame capture loop (requestAnimationFrame, capped at 30 FPS,
+ *     · Frame capture loop (requestAnimationFrame, capped at 15 FPS,
  *       JPEG blob → ws.send)
  *     · Input source toggle (Live Camera via getUserMedia / Upload Video)
  *     · Strategy mode toggle (both | detection_only | tracking_only)
@@ -34,8 +34,8 @@
     return `${proto}//${global.location.host}/ws/stream`;
   })();
 
-  /** Request up to 30 FPS; actual throughput depends on camera and inference speed. */
-  const TARGET_FPS = 30;
+  /** Request up to 15 FPS; actual throughput depends on camera and inference speed. */
+  const TARGET_FPS = 15;
   const FRAME_INTERVAL_MS = 1000 / TARGET_FPS;
 
   /** Capture canvas dimensions (sent to backend). */
@@ -377,7 +377,7 @@
   }
 
   // =========================================================================
-  // Frame capture loop (requestAnimationFrame, throttled to the 30 FPS target)
+  // Frame capture loop (requestAnimationFrame, throttled to the 15 FPS target)
   // =========================================================================
 
   class FrameCaptureLoop {

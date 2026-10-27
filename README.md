@@ -224,7 +224,7 @@ The system ships with **two interchangeable face detectors**. Set
 
 The detector and recognizer are separate stages. `buffalo_l` supplies the ArcFace recognizer in either mode; selecting SCRFD uses its `det_10g.onnx` detector as well. Switching YOLO26 and SCRFD does not change the recognizer or its embeddings. Both detectors emit the same `DetectionResult` shape (bbox + 5 landmarks + score), so the rest of the pipeline is unchanged.
 
-At application startup, the selected detector and ArcFace recognizer load and run a dummy inference. This moves model/runtime initialization off the first camera frame, but increases startup time; startup fails explicitly if either required model cannot warm up. The configured `MAX_STREAM_FPS=30` is an upper bound, not a throughput guarantee—actual FPS depends on detector inference speed, device, and frame size.
+At application startup, the selected detector and ArcFace recognizer load and run a dummy inference. This moves model/runtime initialization off the first camera frame, but increases startup time; startup fails explicitly if either required model cannot warm up. The configured `MAX_STREAM_FPS=15` is an upper bound, not a throughput guarantee—actual FPS depends on detector inference speed, device, and frame size.
 
 **Download YOLO26-s and the `buffalo_l` recognizer pack** before starting a fresh setup:
 

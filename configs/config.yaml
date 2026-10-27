@@ -48,7 +48,7 @@ cv:
 
 streams:
   max_cameras: 32
-  max_stream_fps: 30
+  max_stream_fps: 15
   max_queue: 128
   heartbeat_interval: 5
   reconnect_backoff: 2

@@ -174,6 +174,32 @@ async def test_rate_limited_frame_is_dropped_without_backend_error():
 
 
 @pytest.mark.asyncio
+async def test_rate_limit_rejects_frames_faster_than_15_fps(monkeypatch):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "max_stream_fps", 15)
+    manager = StreamManager()
+    messages = []
+
+    class WebSocket:
+        async def send_json(self, message):
+            messages.append(message)
+
+    state = SimpleNamespace(
+        connection_id="test-connection",
+        last_frame_ts=time.monotonic() - (1.0 / 30.0),
+        frame_queue=asyncio.Queue(),
+        closed=False,
+        ws=WebSocket(),
+    )
+
+    await manager.handle_binary(state, b"frame")
+
+    assert state.frame_queue.empty()
+    assert messages == [{"type": "frame_dropped"}]
+
+
+@pytest.mark.asyncio
 async def test_frame_below_rate_limit_is_queued():
     manager = StreamManager()
     state = SimpleNamespace(

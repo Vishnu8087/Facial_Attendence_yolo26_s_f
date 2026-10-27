@@ -163,7 +163,7 @@ class Settings(BaseSettings):
     ws_heartbeat_interval: int = 5
     stream_frame_timeout: int = 30
     max_stream_fps: int = Field(
-        30,
+        15,
         validation_alias=AliasChoices(
             "MAX_STREAM_FPS",
             "STREAMS_MAX_STREAM_FPS",
