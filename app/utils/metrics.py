@@ -8,7 +8,7 @@ latency / status codes) is wired up separately by
 """
 from __future__ import annotations
 
-from prometheus_client import Counter, Histogram
+from prometheus_client import Counter, Gauge, Histogram
 
 # --------------------------------------------------------------------------- #
 # Counters
@@ -48,9 +48,9 @@ ws_connections = Counter(
     "Total WebSocket connections accepted on /ws/stream.",
 )
 
-ws_active = Counter(
+ws_active = Gauge(
     "ws_active_connections",
-    "Currently active WebSocket connections (gauge-style via inc/dec).",
+    "Currently active WebSocket connections.",
 )
 
 # --------------------------------------------------------------------------- #

@@ -54,6 +54,48 @@ def test_strategy_detection_only_skips_tracking(
     assert result is not None
 
 
+def test_detection_only_batches_face_embeddings_and_logs_without_liveness(
+    sample_frame, mock_detector, sample_face_frame, mock_tracker, mock_liveness
+):
+    class BatchExtractor:
+        def __init__(self):
+            self.batches = []
+            self.embeddings = [
+                np.ones(512, dtype=np.float32),
+                np.full(512, 2, dtype=np.float32),
+            ]
+
+        def extract_multithreaded(self, chips):
+            self.batches.append(chips)
+            return self.embeddings[: len(chips)]
+
+    identity = {"employee_id": "employee-1", "name": "Test Employee"}
+    extractor = BatchExtractor()
+    aligner = MagicMock(name="FaceAligner")
+    aligner.align.return_value = sample_face_frame
+    matcher = MagicMock(name="EmployeeMatcher")
+    matcher.find_nearest.return_value = (identity, 0.95)
+    logger = MagicMock(name="AttendanceLogger")
+    pipe = AttendancePipeline(
+        detector=mock_detector,
+        aligner=aligner,
+        extractor=extractor,
+        tracker=mock_tracker,
+        liveness=mock_liveness,
+        matcher=matcher,
+        logger=logger,
+    )
+
+    result = pipe.process_frame(sample_frame, strategy="detection_only")
+
+    assert len(extractor.batches) == 1
+    assert len(extractor.batches[0]) == 2
+    assert [track.identity for track in result.tracks] == [identity, identity]
+    assert all(track.liveness_passed is None for track in result.tracks)
+    assert logger.log_attendance.call_count == 1
+    assert logger.log_attendance.call_args.args[0]["liveness_passed"] is None
+
+
 def test_strategy_tracking_only_skips_extraction(
     sample_frame, mock_detector, mock_extractor, mock_tracker, mock_liveness
 ):

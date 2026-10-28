@@ -14,6 +14,32 @@ from app.services.stream_manager import (
     _EmployeeMatcher,
     _build_pipeline,
 )
+from app.utils.metrics import ws_active
+
+
+@pytest.mark.asyncio
+async def test_disconnect_decrements_active_connections_and_cleans_state():
+    manager = StreamManager()
+    before = ws_active._value.get()
+    ws_active.inc()
+
+    class WebSocket:
+        async def close(self, code, reason):
+            return None
+
+    state = ConnectionState(
+        ws=WebSocket(),
+        connection_id="disconnect-test",
+        pipeline=None,
+        attendance_logger=SimpleNamespace(),
+    )
+    manager._connections[state.connection_id] = state
+
+    await manager.disconnect(state)
+
+    assert ws_active._value.get() == before
+    assert state.connection_id not in manager._connections
+    assert state.closed is True
 
 
 def test_default_stream_pipeline_builds_with_configured_detector():
@@ -384,6 +410,46 @@ async def test_process_one_passes_precomputed_detections_to_pipeline(monkeypatch
 
     assert received["detections"] == [marker]
     assert messages[0]["type"] == "frame"
+
+
+@pytest.mark.asyncio
+async def test_detection_only_identity_is_logged_without_failing_liveness_gate(monkeypatch):
+    manager = StreamManager()
+    identity = {
+        "employee_id": "employee-1",
+        "name": "Test Employee",
+        "employee_pk": 1,
+    }
+    logged = []
+
+    async def record_attendance(_state, **kwargs):
+        logged.append(kwargs)
+
+    monkeypatch.setattr(manager, "_log_attendance_async", record_attendance)
+    state = SimpleNamespace(current_strategy="detection_only", effective_threshold=0.5)
+    result = SimpleNamespace(
+        annotated_frame=np.zeros((2, 2, 3), dtype=np.uint8),
+        tracks=[
+            SimpleNamespace(
+                bbox=(0, 0, 1, 1),
+                score=0.95,
+                track_id=None,
+                identity=identity,
+                similarity=0.95,
+                liveness_passed=None,
+                liveness_confidence=None,
+                strategy="detection_only",
+            )
+        ],
+    )
+
+    _, detections, events = manager._unpack_result(result, state)
+    await asyncio.sleep(0)
+
+    assert detections[0]["is_real"] is None
+    assert events[0]["employee_id"] == "employee-1"
+    assert events[0]["liveness_passed"] is None
+    assert logged[0]["liveness_passed"] is None
 
 
 @pytest.mark.asyncio

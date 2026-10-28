@@ -248,6 +248,7 @@
       this._backoffMs = RECONNECT_INITIAL_MS;
       this._reconnectTimer = null;
       this._pendingConfig = null; // queued config while disconnected
+      this._lastCloseInfo = '';
       this._inFlightFrames = 0;
       this._maxInFlightFrames = 2;
       this.onOpen = null;
@@ -306,10 +307,12 @@
         if (typeof this.onError === 'function') this.onError(evt);
       };
 
-      this.ws.onclose = () => {
+      this.ws.onclose = (evt) => {
         this._inFlightFrames = 0;
         ConnStatus.set('disconnected', 'Disconnected');
-        if (typeof this.onClose === 'function') this.onClose();
+        const closeReason = evt.reason ? `: ${evt.reason}` : '';
+        this._lastCloseInfo = `Connection closed (${evt.code}${closeReason})`;
+        if (typeof this.onClose === 'function') this.onClose(evt);
         if (this._shouldReconnect) this._scheduleReconnect();
       };
     }
@@ -319,7 +322,11 @@
       if (this._reconnectTimer) return;
       const delay = this._backoffMs;
       this._backoffMs = Math.min(this._backoffMs * 2, RECONNECT_MAX_MS);
-      ConnStatus.set('connecting', `Reconnecting in ${(delay / 1000).toFixed(0)}s…`);
+      const closeInfo = this._lastCloseInfo ? ` — ${this._lastCloseInfo}` : '';
+      ConnStatus.set(
+        'connecting',
+        `Reconnecting in ${(delay / 1000).toFixed(0)}s…${closeInfo}`
+      );
       this._reconnectTimer = setTimeout(() => {
         this._reconnectTimer = null;
         this.connect();

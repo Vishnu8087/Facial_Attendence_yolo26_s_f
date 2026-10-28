@@ -121,8 +121,9 @@ accepts a `strategy` argument with three modes:
 
 \* In `both` mode the extractor runs for a new track and re-extracts every
 30 processed frames; it does not wait for the attendance cooldown to expire.
-`detection_only` can log a matched identity without running liveness, so use
-`both` for normal attendance operation.
+`detection_only` can log a matched identity without running liveness; its
+attendance records leave the liveness result unknown (`null`). It does not
+provide spoof protection, so use `both` for normal attendance operation.
 
 ```
 Strategy "detection_only":

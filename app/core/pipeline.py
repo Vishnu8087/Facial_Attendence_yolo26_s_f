@@ -78,9 +78,10 @@ class TrackResult:
         or ``tracking_only``).
     liveness_passed:
         ``True`` if the liveness verifier approved this track.
-        Always ``False`` in ``detection_only`` mode.
+        ``None`` when liveness is not run in ``detection_only`` mode.
     liveness_confidence:
-        Confidence score in ``[0, 1]`` from the liveness verifier.
+        Confidence score in ``[0, 1]`` from the liveness verifier, or
+        ``None`` when liveness is not run.
     strategy:
         Which strategy produced this row.
     """
@@ -89,15 +90,16 @@ class TrackResult:
     bbox: Tuple[int, int, int, int]
     identity: Optional[Dict[str, Any]]
     similarity: float
-    liveness_passed: bool
-    liveness_confidence: float
+    liveness_passed: Optional[bool]
+    liveness_confidence: Optional[float]
     strategy: str
 
     def __post_init__(self) -> None:
         # Coerce bbox to a clean tuple of ints for JSON-friendliness.
         self.bbox = tuple(int(v) for v in self.bbox)  # type: ignore[assignment]
         self.similarity = float(self.similarity)
-        self.liveness_confidence = float(self.liveness_confidence)
+        if self.liveness_confidence is not None:
+            self.liveness_confidence = float(self.liveness_confidence)
 
 
 @dataclass
@@ -323,17 +325,62 @@ class AttendancePipeline:
         tracks: List[TrackResult] = []
         annotated = np.asarray(frame).copy() if self.draw_annotations else np.asarray(frame)
 
+        aligned_detections: list[tuple[DetectionResult, Optional[np.ndarray]]] = []
+        chips: list[np.ndarray] = []
         for det in detections:
             if not self._passes_min_face(det):
                 continue
-            identity, sim = self._extract_and_match(frame, det.landmarks)
+            try:
+                chip = self.aligner.align(frame, det.landmarks)
+            except Exception as exc:
+                logger.debug("aligner.align raised: %s", exc)
+                chip = None
+            aligned_detections.append((det, chip))
+            if chip is not None:
+                chips.append(chip)
+
+        embeddings: list[Optional[np.ndarray]] = []
+        if chips:
+            try:
+                if callable(
+                    getattr(type(self.extractor), "extract_multithreaded", None)
+                ):
+                    batch = self.extractor.extract_multithreaded(chips)
+                else:
+                    batch = np.stack(
+                        [self.extractor.extract(chip) for chip in chips],
+                        axis=0,
+                    )
+                if len(batch) != len(chips):
+                    raise RuntimeError(
+                        "ArcFace returned a different number of embeddings than input chips"
+                    )
+                embeddings = [np.asarray(embedding) for embedding in batch]
+            except Exception as exc:
+                logger.warning("batch ArcFace extraction failed: %s", exc)
+                embeddings = []
+                for chip in chips:
+                    try:
+                        embeddings.append(self.extractor.extract(chip))
+                    except Exception as fallback_exc:
+                        logger.debug("extractor.extract raised: %s", fallback_exc)
+                        embeddings.append(None)
+
+        embedding_index = 0
+        for det, chip in aligned_detections:
+            if chip is None:
+                identity, sim = None, 0.0
+            else:
+                emb = embeddings[embedding_index] if embedding_index < len(embeddings) else None
+                embedding_index += 1
+                identity, sim = self._match(emb) if emb is not None else (None, 0.0)
             tr = TrackResult(
                 track_id=None,
                 bbox=self._bbox_tuple(det.bbox),
                 identity=identity,
                 similarity=sim,
-                liveness_passed=False,  # No liveness in detection_only mode
-                liveness_confidence=0.0,
+                liveness_passed=None,
+                liveness_confidence=None,
                 strategy=strategy,
             )
             tracks.append(tr)
@@ -344,7 +391,7 @@ class AttendancePipeline:
                 self._try_log(
                     identity=identity,
                     similarity=sim,
-                    liveness_passed=False,
+                    liveness_passed=None,
                     track_id=None,
                 )
 
@@ -701,7 +748,7 @@ class AttendancePipeline:
         self,
         identity: Dict[str, Any],
         similarity: float,
-        liveness_passed: bool,
+        liveness_passed: Optional[bool],
         track_id: Optional[int],
     ) -> bool:
         """Call ``logger.log_attendance`` if cooldown allows. Returns True if logged."""
@@ -721,7 +768,7 @@ class AttendancePipeline:
         payload = {
             "identity": identity,
             "similarity": float(similarity),
-            "liveness_passed": bool(liveness_passed),
+            "liveness_passed": liveness_passed,
             "track_id": track_id,
             "timestamp": _iso_now(),
         }
@@ -757,7 +804,11 @@ class AttendancePipeline:
         labels = []
         for t in tracks:
             name = (t.identity or {}).get("name") or f"track={t.track_id}"
-            tag = "LIVE" if t.liveness_passed else "spoof?"
+            tag = (
+                "N/A"
+                if t.liveness_passed is None
+                else ("LIVE" if t.liveness_passed else "spoof?")
+            )
             labels.append(f"{name} sim={t.similarity:.2f} [{tag}]")
         return draw_boxes(frame, boxes, labels=labels)
 
