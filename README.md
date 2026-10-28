@@ -115,19 +115,20 @@ accepts a `strategy` argument with three modes:
 
 | Strategy           | Detect | Align | Track | Liveness | Extract | DB match | Log | Use case                                  |
 |--------------------|:-----:|:-----:|:-----:|:--------:|:-------:|:--------:|:---:|-------------------------------------------|
-| `detection_only`   |   ✅  |   ✅  |   ❌  |    ❌    |   ✅    |    ✅    | ✅  | Highest accuracy, expensive (re-detect each frame) |
+| `detection_only`   |   ✅  |   ✅  |   ✅* |    ✅*   |   ✅    |    ✅    | ✅* | Re-detect and recognize every frame |
 | `tracking_only`    |   ✅  |   ⚠️ |   ✅  |    ✅    |   ❌    |    ❌    | ❌  | Cheap motion tracking, no identity        |
 | `both` (default)   |   ✅  |   ✅  |   ✅  |    ✅    |   ✅*   |    ✅*   | ✅  | Best of both — extract only on track birth/cooldown |
 
 \* In `both` mode the extractor runs for a new track and re-extracts every
 30 processed frames; it does not wait for the attendance cooldown to expire.
-`detection_only` can log a matched identity without running liveness; its
-attendance records leave the liveness result unknown (`null`). It does not
-provide spoof protection, so use `both` for normal attendance operation.
+`detection_only` still re-detects and re-extracts every frame, but uses temporary
+track IDs to accumulate liveness evidence. Attendance is logged only after a
+matched identity passes liveness and the cooldown allows it.
 
 ```
 Strategy "detection_only":
-   frame ─▶ detect ─▶ align ─▶ extract ─▶ match DB ─▶ log
+   frame ─▶ detect ─▶ track for liveness ─▶ align ─▶ extract ─▶ match DB
+                                             └─▶ liveness pass ─▶ log
 
 Strategy "tracking_only":
    frame ─▶ detect ─▶ track ─▶ liveness ─▶ (no extract, no match)

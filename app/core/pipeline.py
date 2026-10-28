@@ -7,9 +7,9 @@ strategies (the toggle required by orchestrator task ``0-amend``):
 
 * ``"both"`` (default) — full pipeline:
   detect → align → track → liveness → extract → match → log.
-* ``"detection_only"`` — Strategy 1 standalone. Skip tracker + liveness;
-  re-detect every frame, match against DB immediately. ``track_id``
-  in the result is ``None`` and ``liveness_passed`` is always ``False``.
+* ``"detection_only"`` — Strategy 1 standalone. Re-detect, extract, and
+  match every frame; temporary track IDs accumulate liveness evidence
+  required before attendance is logged.
 * ``"tracking_only"`` — Strategy 2 standalone. Skip embedding
   extraction + DB match; just track + liveness. ``identity`` is ``None``
   and ``similarity`` is ``0.0``. No attendance logging.
@@ -21,7 +21,7 @@ a re-entrant lock.
 Attendance logging is delegated to an injected ``logger`` object (any
 object with a ``log_attendance(...)`` method) and only fires when:
 
-1. the strategy is ``"both"`` (logging requires an identity match), AND
+1. the strategy is not ``"tracking_only"``, AND
 2. identity is not ``None`` (matched above ``similarity_threshold``), AND
 3. ``liveness_passed`` is ``True``, AND
 4. the same identity has not been logged within ``cooldown_seconds``.
@@ -321,21 +321,23 @@ class AttendancePipeline:
         strategy: str,
         frame_idx: int,
     ) -> FrameResult:
-        """Strategy 1 — re-detect every frame, align+extract+match each."""
+        """Strategy 1 — re-detect and recognize every frame, gating logs on liveness."""
         tracks: List[TrackResult] = []
         annotated = np.asarray(frame).copy() if self.draw_annotations else np.asarray(frame)
 
-        aligned_detections: list[tuple[DetectionResult, Optional[np.ndarray]]] = []
+        eligible_detections = [
+            det for det in detections if self._passes_min_face(det)
+        ]
+        tracked = self._safe_tracker_update(eligible_detections, frame)
+        aligned_tracks: list[tuple[Track, Optional[np.ndarray]]] = []
         chips: list[np.ndarray] = []
-        for det in detections:
-            if not self._passes_min_face(det):
-                continue
+        for track in tracked:
             try:
-                chip = self.aligner.align(frame, det.landmarks)
+                chip = self.aligner.align(frame, track.landmarks)
             except Exception as exc:
                 logger.debug("aligner.align raised: %s", exc)
                 chip = None
-            aligned_detections.append((det, chip))
+            aligned_tracks.append((track, chip))
             if chip is not None:
                 chips.append(chip)
 
@@ -367,32 +369,36 @@ class AttendancePipeline:
                         embeddings.append(None)
 
         embedding_index = 0
-        for det, chip in aligned_detections:
+        for track, chip in aligned_tracks:
             if chip is None:
                 identity, sim = None, 0.0
             else:
                 emb = embeddings[embedding_index] if embedding_index < len(embeddings) else None
                 embedding_index += 1
                 identity, sim = self._match(emb) if emb is not None else (None, 0.0)
+            liveness_result = self._verify_liveness(
+                frame, track.landmarks, track.track_id
+            )
+            is_live = self._extract_is_live(liveness_result)
+            confidence = self._extract_liveness_confidence(liveness_result)
             tr = TrackResult(
-                track_id=None,
-                bbox=self._bbox_tuple(det.bbox),
+                track_id=int(track.track_id),
+                bbox=self._bbox_tuple(track.bbox),
                 identity=identity,
                 similarity=sim,
-                liveness_passed=None,
-                liveness_confidence=None,
+                liveness_passed=is_live,
+                liveness_confidence=confidence,
                 strategy=strategy,
             )
             tracks.append(tr)
 
-            # In detection_only we still try to log (no liveness gate).
-            # The cooldown still applies.
-            if identity is not None:
+            # Recognition can run every frame, but attendance requires liveness.
+            if identity is not None and is_live:
                 self._try_log(
                     identity=identity,
                     similarity=sim,
-                    liveness_passed=None,
-                    track_id=None,
+                    liveness_passed=True,
+                    track_id=int(track.track_id),
                 )
 
         if self.draw_annotations:

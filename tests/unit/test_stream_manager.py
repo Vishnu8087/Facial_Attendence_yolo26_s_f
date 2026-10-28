@@ -413,7 +413,7 @@ async def test_process_one_passes_precomputed_detections_to_pipeline(monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_detection_only_identity_is_logged_without_failing_liveness_gate(monkeypatch):
+async def test_detection_only_identity_is_logged_after_liveness_passes(monkeypatch):
     manager = StreamManager()
     identity = {
         "employee_id": "employee-1",
@@ -436,8 +436,8 @@ async def test_detection_only_identity_is_logged_without_failing_liveness_gate(m
                 track_id=None,
                 identity=identity,
                 similarity=0.95,
-                liveness_passed=None,
-                liveness_confidence=None,
+                liveness_passed=True,
+                liveness_confidence=0.9,
                 strategy="detection_only",
             )
         ],
@@ -446,10 +446,36 @@ async def test_detection_only_identity_is_logged_without_failing_liveness_gate(m
     _, detections, events = manager._unpack_result(result, state)
     await asyncio.sleep(0)
 
-    assert detections[0]["is_real"] is None
+    assert detections[0]["is_real"] is True
     assert events[0]["employee_id"] == "employee-1"
-    assert events[0]["liveness_passed"] is None
-    assert logged[0]["liveness_passed"] is None
+    assert events[0]["liveness_passed"] is True
+    assert logged[0]["liveness_passed"] is True
+
+
+@pytest.mark.asyncio
+async def test_stream_does_not_log_identity_without_liveness_pass():
+    manager = StreamManager()
+    identity = {"employee_id": "employee-1", "name": "Test Employee"}
+    state = SimpleNamespace(current_strategy="detection_only", effective_threshold=0.5)
+    result = SimpleNamespace(
+        annotated_frame=np.zeros((2, 2, 3), dtype=np.uint8),
+        tracks=[
+            SimpleNamespace(
+                bbox=(0, 0, 1, 1),
+                score=0.95,
+                track_id=1,
+                identity=identity,
+                similarity=0.95,
+                liveness_passed=None,
+                liveness_confidence=None,
+                strategy="detection_only",
+            )
+        ],
+    )
+
+    _, _, events = manager._unpack_result(result, state)
+
+    assert events == []
 
 
 @pytest.mark.asyncio

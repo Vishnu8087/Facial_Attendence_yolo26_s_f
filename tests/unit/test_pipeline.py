@@ -42,19 +42,19 @@ def _build_pipeline(mock_detector, mock_extractor, mock_tracker, mock_liveness):
             pytest.skip(f"AttendancePipeline signature differs from expected: {exc!r}")
 
 
-def test_strategy_detection_only_skips_tracking(
+def test_strategy_detection_only_tracks_faces_for_liveness(
     sample_frame, mock_detector, mock_extractor, mock_tracker, mock_liveness
 ):
     pipe = _build_pipeline(mock_detector, mock_extractor, mock_tracker, mock_liveness)
     result = pipe.process_frame(sample_frame, strategy="detection_only")
-    # Tracker should not have been called
-    assert mock_tracker.update.call_count == 0
+    assert mock_tracker.update.call_count == 2
+    assert mock_liveness.verify.call_count == 2
     # Extractor SHOULD have been called for each detection
     assert mock_extractor.extract.call_count >= 1
     assert result is not None
 
 
-def test_detection_only_batches_face_embeddings_and_logs_without_liveness(
+def test_detection_only_batches_face_embeddings_and_requires_liveness_for_attendance(
     sample_frame, mock_detector, sample_face_frame, mock_tracker, mock_liveness
 ):
     class BatchExtractor:
@@ -91,9 +91,42 @@ def test_detection_only_batches_face_embeddings_and_logs_without_liveness(
     assert len(extractor.batches) == 1
     assert len(extractor.batches[0]) == 2
     assert [track.identity for track in result.tracks] == [identity, identity]
-    assert all(track.liveness_passed is None for track in result.tracks)
+    assert all(track.liveness_passed is True for track in result.tracks)
     assert logger.log_attendance.call_count == 1
-    assert logger.log_attendance.call_args.args[0]["liveness_passed"] is None
+    assert logger.log_attendance.call_args.args[0]["liveness_passed"] is True
+
+
+def test_detection_only_does_not_log_identity_when_liveness_fails(
+    sample_frame,
+    sample_face_frame,
+    mock_detector,
+    mock_tracker,
+    mock_liveness,
+):
+    identity = {"employee_id": "employee-1", "name": "Test Employee"}
+    extractor = MagicMock(name="FeatureExtractor")
+    extractor.extract.return_value = np.ones(512, dtype=np.float32)
+    aligner = MagicMock(name="FaceAligner")
+    aligner.align.return_value = sample_face_frame
+    matcher = MagicMock(name="EmployeeMatcher")
+    matcher.find_nearest.return_value = (identity, 0.95)
+    logger = MagicMock(name="AttendanceLogger")
+    mock_liveness.verify.return_value = {"is_real": False, "score": 0.1}
+    pipe = AttendancePipeline(
+        detector=mock_detector,
+        aligner=aligner,
+        extractor=extractor,
+        tracker=mock_tracker,
+        liveness=mock_liveness,
+        matcher=matcher,
+        logger=logger,
+    )
+
+    result = pipe.process_frame(sample_frame, strategy="detection_only")
+
+    assert all(track.identity == identity for track in result.tracks)
+    assert all(track.liveness_passed is False for track in result.tracks)
+    logger.log_attendance.assert_not_called()
 
 
 def test_strategy_tracking_only_skips_extraction(

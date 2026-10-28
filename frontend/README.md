@@ -58,7 +58,7 @@ Both modes stream binary JPEG frames to the backend via WebSocket using
 | Mode | Strategy | Backend pipeline |
 |---|---|---|
 | **Both** (default) | full | detect → align → track → liveness → embed → match → log |
-| **Strategy 1** | detection + embedding only | re-detect every frame, match DB immediately, skip tracker/liveness |
+| **Strategy 1** | detection + embedding + liveness gate | re-detect and recognize every frame; temporary track IDs collect liveness evidence; log only after liveness passes |
 | **Strategy 2** | tracking + liveness only | track + anti-spoof, skip identity extraction, do NOT log attendance |
 
 Live-switchable — no stream restart required. The dashboard sends

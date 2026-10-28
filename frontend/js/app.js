@@ -63,7 +63,7 @@
     },
     detection_only: {
       label: 'Strategy 1',
-      hint: 'Strategy 1 — Detection + Embedding only. Re-detect every frame, match against DB immediately. Skips tracker + liveness.',
+      hint: 'Strategy 1 — Detect and recognize every frame; temporary tracking and liveness are required before attendance is logged.',
     },
     tracking_only: {
       label: 'Strategy 2',

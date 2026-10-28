@@ -933,9 +933,10 @@ class StreamManager:
                     det["identity"] = str(emp_id)
             detections.append(det)
 
-            # If liveness rejected, count it but don't log attendance.
-            if liveness_passed is False:
-                spoof_rejected_total.labels(strategy=strategy).inc()
+            # Attendance must never be logged unless liveness explicitly passed.
+            if liveness_passed is not True:
+                if liveness_passed is False:
+                    spoof_rejected_total.labels(strategy=strategy).inc()
                 continue
 
             # If we have a matched identity, log attendance.

@@ -119,6 +119,7 @@ class MotionTracker:
         self._next_id: int = 1
         self._tracks: Dict[int, dict] = {}  # track_id -> state dict
         self._frame_index: int = 0
+        self._bytetrack_ids: Dict[int, int] = {}
 
         # Optional ByteTrack backend (loaded lazily on first update).
         self._bytetrack = None
@@ -180,6 +181,7 @@ class MotionTracker:
         self._next_id = 1
         self._tracks.clear()
         self._frame_index = 0
+        self._bytetrack_ids.clear()
         # Reset ByteTrack too if loaded.
         if self._bytetrack is not None:
             try:
@@ -213,6 +215,13 @@ class MotionTracker:
         ]
         for tid in expired:
             self._tracks.pop(tid, None)
+        if expired:
+            expired_ids = set(expired)
+            self._bytetrack_ids = {
+                backend_id: track_id
+                for backend_id, track_id in self._bytetrack_ids.items()
+                if track_id not in expired_ids
+            }
 
     def _update_with_iou(self, det_list: Sequence, now: float) -> List[Track]:
         """Greedy IoU matcher — default path."""
@@ -295,20 +304,32 @@ class MotionTracker:
             return self._bytetrack is not None
         self._bytetrack_attempted = True
         try:
-            from supervision.tracker.byte_track.core import ByteTrack  # type: ignore
+            from supervision import ByteTrack  # type: ignore
         except Exception:
             try:
-                # Older supervision versions exposed it differently
-                from supervision.tracker import ByteTrack  # type: ignore
+                from supervision.tracker.byte_track.core import ByteTrack  # type: ignore
             except Exception:
-                return False
+                try:
+                    # Older supervision versions exposed it differently.
+                    from supervision.tracker import ByteTrack  # type: ignore
+                except Exception:
+                    return False
         try:
-            self._bytetrack = ByteTrack(
-                track_thresh=self.track_thresh,
-                track_buffer=self.track_buffer,
-                match_thresh=self.match_thresh,
-                frame_rate=self.frame_rate,
-            )
+            try:
+                self._bytetrack = ByteTrack(
+                    track_activation_threshold=self.track_thresh,
+                    lost_track_buffer=self.track_buffer,
+                    minimum_matching_threshold=self.match_thresh,
+                    frame_rate=self.frame_rate,
+                    minimum_consecutive_frames=1,
+                )
+            except TypeError:
+                self._bytetrack = ByteTrack(
+                    track_thresh=self.track_thresh,
+                    track_buffer=self.track_buffer,
+                    match_thresh=self.match_thresh,
+                    frame_rate=self.frame_rate,
+                )
         except Exception as exc:  # pragma: no cover
             logger.debug("bytetrack.init_failed err=%s", exc)
             self._bytetrack = None
@@ -333,25 +354,47 @@ class MotionTracker:
         bboxes = np.stack([np.asarray(getattr(d, "bbox"), dtype=np.float32).reshape(4) for d in det_list])
         # sv expects xyxy (which is our format).
         sv_dets = sv.Detections(xyxy=bboxes, confidence=np.array([float(getattr(d, "score", 0.0)) for d in det_list], dtype=np.float32))
-        if frame is None:
-            # ByteTrack needs a frame for shape info — synthesise one.
-            h = int(max(bboxes[:, 3])) + 1
-            w = int(max(bboxes[:, 2])) + 1
-            frame = np.zeros((max(h, 1), max(w, 1), 3), dtype=np.uint8)
-        tracked = self._bytetrack.update_with_detections(sv_dets, frame=frame)
+        try:
+            tracked = self._bytetrack.update_with_detections(sv_dets)
+        except TypeError:
+            tracked = self._bytetrack.update_with_detections(sv_dets, frame=frame)
 
         out: List[Track] = []
+        matched_detection_indices: set[int] = set()
+        frame_track_ids: set[int] = set()
         for i in range(len(tracked)):
-            tid = int(tracked.tracker_id[i])
+            backend_tid = int(tracked.tracker_id[i])
             bbox = np.asarray(tracked.xyxy[i], dtype=np.float32)
+            tid = self._bytetrack_ids.get(backend_tid)
+            if tid is None:
+                tid = self._match_fallback_track_id(bbox, frame_track_ids)
+                if tid is None:
+                    tid = self._allocate_id()
+                self._bytetrack_ids[backend_tid] = tid
+            elif tid in frame_track_ids:
+                tid = self._allocate_id()
+                self._bytetrack_ids[backend_tid] = tid
+            self._next_id = max(self._next_id, tid + 1)
             score = float(tracked.confidence[i])
-            # Look up landmarks from the original detection (ByteTrack
-            # doesn't propagate them for us).
-            lm = None
-            if i < len(det_list):
-                raw_lm = getattr(det_list[i], "landmarks", None)
-                if raw_lm is not None:
-                    lm = np.asarray(raw_lm, dtype=np.float32).reshape(5, 2)
+            # ByteTrack may reorder or omit detections; associate returned
+            # boxes with their source detection before carrying landmarks.
+            source_index = max(
+                range(len(det_list)),
+                key=lambda index: _iou(
+                    bbox,
+                    np.asarray(
+                        getattr(det_list[index], "bbox"), dtype=np.float32
+                    ).reshape(4),
+                ),
+            )
+            matched_detection_indices.add(source_index)
+            frame_track_ids.add(tid)
+            raw_landmarks = getattr(det_list[source_index], "landmarks", None)
+            lm = (
+                np.asarray(raw_landmarks, dtype=np.float32).reshape(5, 2)
+                if raw_landmarks is not None
+                else None
+            )
             # Update our cooldown map.
             self._tracks[tid] = {
                 "bbox": bbox.copy(),
@@ -364,7 +407,60 @@ class MotionTracker:
             out.append(
                 Track(track_id=tid, bbox=bbox, landmarks=lm, score=score, frame_id=self._frame_index)
             )
+        # Preserve detections ByteTrack has not activated yet. Subsequent
+        # ByteTrack IDs are mapped to these stable fallback IDs when boxes match.
+        for source_index, detection in enumerate(det_list):
+            if source_index in matched_detection_indices:
+                continue
+            bbox = np.asarray(
+                getattr(detection, "bbox"), dtype=np.float32
+            ).reshape(4)
+            score = float(getattr(detection, "score", 0.0) or 0.0)
+            landmarks = getattr(detection, "landmarks", None)
+            lm = (
+                np.asarray(landmarks, dtype=np.float32).reshape(5, 2)
+                if landmarks is not None
+                else None
+            )
+            fallback_tid = self._match_fallback_track_id(bbox, frame_track_ids)
+            if fallback_tid is None:
+                fallback_tid = self._allocate_id()
+            frame_track_ids.add(fallback_tid)
+            self._tracks[fallback_tid] = {
+                "bbox": bbox.copy(),
+                "landmarks": lm.copy() if lm is not None else None,
+                "score": score,
+                "last_matched_time": now,
+                "last_frame_id": self._frame_index,
+                "history": deque(maxlen=self.track_buffer),
+            }
+            out.append(
+                Track(
+                    track_id=fallback_tid,
+                    bbox=bbox,
+                    landmarks=lm,
+                    score=score,
+                    frame_id=self._frame_index,
+                )
+            )
         return out
+
+    def _match_fallback_track_id(
+        self,
+        bbox: np.ndarray,
+        excluded_track_ids: Optional[set[int]] = None,
+    ) -> Optional[int]:
+        """Associate a temporarily untracked detection with its recent fallback ID."""
+        best_track_id = None
+        best_iou = 0.0
+        for track_id, state in self._tracks.items():
+            if excluded_track_ids and track_id in excluded_track_ids:
+                continue
+            overlap = _iou(bbox, state["bbox"])
+            if overlap > best_iou:
+                best_iou = overlap
+                best_track_id = track_id
+        return best_track_id if best_iou >= self.match_thresh else None
 
 
 # --------------------------------------------------------------------------- #

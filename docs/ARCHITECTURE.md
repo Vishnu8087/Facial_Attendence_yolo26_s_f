@@ -214,7 +214,7 @@ Summary:
 512-d ArcFace embedding is computed only once per track birth (and again
 after the cooldown expires), not every frame.
 
-### `strategy="detection_only"` — Strategy 1 standalone
+### `strategy="detection_only"` — Strategy 1 with per-frame recognition
 
 ```
  Browser            StreamManager           Pipeline                    DB
@@ -222,17 +222,21 @@ after the cooldown expires), not every frame.
    ├────────────────────▶│                      │                       │
    │                     │ process_frame(s=det) │                       │
    │                     ├─────────────────────▶│                       │
-   │                     │                      │ detect → align        │
-   │                     │                      │ extract (every frame) │
-   │                     │                      ├──────────────────────▶│ match → log
+   │                     │                      │ detect → track IDs    │
+   │                     │                      │ align → extract       │
+   │                     │                      │ (every frame) → match│
+   │                     │                      │ liveness → log if live│
+   │                     │                      ├──────────────────────▶│
    │                     │                      │                       │
    │                     │◀─────────────────────┤ FrameResult           │
    │◀────────────────────┤ emit {type: frame, type: attendance}        │
 ```
 
 **When to use**: high-accuracy scenarios with few faces per frame (e.g.
-single-door check-in). Skip tracker + liveness entirely — every frame
-re-detects, re-extracts, and re-matches. Most expensive per frame.
+single-door check-in). Detection, ArcFace extraction, and matching run for
+every processed frame. Temporary track IDs retain liveness history; attendance
+is logged only when a matched identity passes liveness. This is more expensive
+than `both` because it does not reuse cached embeddings.
 
 ### `strategy="tracking_only"` — Strategy 2 standalone
 
@@ -258,9 +262,8 @@ irrelevant. Cheapest mode — no embedding extraction, no DB writes.
 
 A `{"type": "config", "strategy": "..."}` message takes effect on the
 **next** frame processed by the StreamManager. The current frame
-finishes with the old strategy; no reconnect is needed. Tracker state is
-preserved across switches *unless* the new strategy is `detection_only`,
-in which case the tracker is reset (no IDs to preserve).
+finishes with the old strategy; no reconnect is needed. Tracker state is preserved across switches; Strategy 1 also uses track IDs for
+its liveness history while continuing to re-extract embeddings every frame.
 
 ## Anti-spoofing deep-dive
 
@@ -316,9 +319,12 @@ is_real = score >= 0.6
 
 ### Bypass conditions
 
-The `AttendancePipeline` consults `LivenessVerifier` only in the
-`both` and `tracking_only` strategies. In `detection_only`, liveness is
-skipped (per the orchestrator's spec in Task 0-amend).
+The `AttendancePipeline` consults `LivenessVerifier` in all strategies.
+`detection_only` still recognizes every frame, but attendance is gated on a
+positive liveness result so a static printed photo is not accepted solely
+because its identity matches. This heuristic verifier is not a certified
+presentation-attack detector; production deployments needing stronger spoof
+resistance should use a dedicated anti-spoof model and challenge-response.
 
 ## Scaling considerations
 

@@ -37,6 +37,19 @@ def test_tracker_assigns_new_id_to_new_face():
     assert a[0].track_id != b[0].track_id
 
 
+def test_bytetrack_keeps_fallback_id_when_new_track_activates():
+    pytest.importorskip("supervision")
+    tracker = MotionTracker(cooldown_seconds=30.0)
+
+    first = tracker.update([_det(_bbox(100, 100))])
+    moved = tracker.update([_det(_bbox(500, 400))])
+    activated = tracker.update([_det(_bbox(502, 402))])
+
+    assert tracker._bytetrack is not None
+    assert len(first) == len(moved) == len(activated) == 1
+    assert moved[0].track_id == activated[0].track_id
+
+
 def test_tracker_handles_empty_input():
     tracker = MotionTracker()
     out = tracker.update([])
