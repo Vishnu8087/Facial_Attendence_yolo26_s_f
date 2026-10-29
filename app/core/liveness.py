@@ -1,4 +1,4 @@
-"""Anti-spoofing liveness verification module.
+"""Face liveness verification with an optional MiniFASNet PAD model.
 
 Combines two complementary passive-liveness signals:
 
@@ -16,8 +16,10 @@ Combines two complementary passive-liveness signals:
    The verifier requires at least ``min_blinks`` blinks within the last
    ``window_seconds`` seconds.
 
-The two signals are AND-ed by default (both must pass), but the mode is
-configurable via ``require`` (``"both"`` | ``"either"``).
+Without a configured PAD model, the heuristic combines the two signals
+using ``require`` (``"both"`` | ``"either"``). When MiniFASNet PAD is
+configured, its live/spoof classification controls the attendance gate;
+the heuristic signals are retained for diagnostics only.
 
 The :class:`LivenessResult` returned by :meth:`LivenessVerifier.verify`
 supports BOTH attribute access (``r.is_live``) and dict-style access
@@ -68,6 +70,8 @@ class LivenessResult:
     ear: float = 0.0
     blink_count: int = 0
     head_pose: Tuple[float, float, float] = (0.0, 0.0, 0.0)
+    pad_label: Optional[str] = None
+    pad_scores: Optional[Tuple[float, float, float]] = None
 
     def __post_init__(self) -> None:
         self._normalise()
@@ -120,6 +124,8 @@ class LivenessResult:
             "ear",
             "blink_count",
             "head_pose",
+            "pad_label",
+            "pad_scores",
         )
 
     def get(self, key: str, default: Any = None) -> Any:
@@ -175,6 +181,7 @@ class LivenessVerifier:
         frame_rate: int = 30,
         history_len: int = 60,
         optical_flow_enabled: bool = False,
+        pad_model: Any = None,
     ) -> None:
         self.ear_threshold = float(ear_threshold)
         self.min_blinks = int(min_blinks)
@@ -186,6 +193,7 @@ class LivenessVerifier:
         self.frame_rate = int(frame_rate)
         self.history_len = int(history_len)
         self.optical_flow_enabled = bool(optical_flow_enabled)
+        self.pad_model = pad_model
 
         # Per-track state: track_id -> dict with deque histories.
         self._tracks: Dict[Any, dict] = {}
@@ -255,6 +263,7 @@ class LivenessVerifier:
         frame: Optional[np.ndarray] = None,
         landmarks: Optional[ArrayLike] = None,
         track_id: Any = 0,
+        bbox: Optional[ArrayLike] = None,
     ) -> LivenessResult:
         """Run the full liveness check.
 
@@ -271,8 +280,38 @@ class LivenessVerifier:
         """
         if landmarks is not None:
             self.update(landmarks, track_id=track_id, frame=frame)
+        if self.pad_model is not None:
+            if frame is None or bbox is None:
+                return LivenessResult(
+                    is_live=False,
+                    confidence=0.0,
+                    reason="pad_missing_frame_or_bbox",
+                )
+            pad_result = self.pad_model.predict(frame, bbox)
+            scores = tuple(float(value) for value in pad_result["scores"])
+            return LivenessResult(
+                is_live=bool(pad_result["is_real"]),
+                confidence=float(pad_result["score"]),
+                reason=f"pad_{pad_result['label']}",
+                pad_label=str(pad_result["label"]),
+                pad_scores=scores,
+            )
+        if landmarks is None:
+            state = self._tracks.get(track_id)
+            if state is None:
+                return LivenessResult(
+                    is_live=False,
+                    confidence=0.0,
+                    reason="missing_landmarks",
+                )
+            return self._build_result(state, None, track_id)
         state = self._get_state(track_id)
         return self._build_result(state, None, track_id)
+
+    def warmup(self) -> None:
+        """Warm the configured PAD model before processing camera frames."""
+        if self.pad_model is not None:
+            self.pad_model.warmup()
 
     def reset(self, track_id: Any = None) -> None:
         """Clear history for ``track_id`` (or all tracks when ``None``)."""

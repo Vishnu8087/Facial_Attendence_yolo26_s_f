@@ -3,8 +3,10 @@
 Settings are resolved in this order (later overrides earlier):
 
 1. ``configs/config.yaml`` — defaults shipped with the repo.
-2. Environment variables — set by Docker / Kubernetes / ``.env``.
-3. Explicitly-passed overrides (tests, scripts).
+2. ``configs/.env`` values for local development.
+3. Root ``.env`` values used by Docker Compose.
+4. Process environment variables — set by Docker / Kubernetes.
+5. Explicitly-passed overrides (tests, scripts).
 
 We use :mod:`pydantic_settings` so that env vars map to fields
 case-insensitively (``DATABASE_URL`` -> ``database_url``).
@@ -17,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from dotenv import dotenv_values
 from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -140,6 +143,21 @@ class Settings(BaseSettings):
     tracker_type: str = "bytetrack"
     liveness_enabled: bool = True
     liveness_min_score: float = 0.5
+    pad_enabled: bool = Field(
+        False,
+        validation_alias=AliasChoices("PAD_ENABLED", "CV_PAD_ENABLED"),
+        description="Use MiniFASNet face PAD instead of the landmark liveness heuristic.",
+    )
+    pad_model_dir: str = Field(
+        "models/pad",
+        validation_alias=AliasChoices("PAD_MODEL_DIR", "CV_PAD_MODEL_DIR"),
+        description="Directory containing the two pinned MiniFASNet ONNX files.",
+    )
+    pad_threshold: float = Field(
+        0.5,
+        validation_alias=AliasChoices("PAD_THRESHOLD", "CV_PAD_THRESHOLD"),
+        description="Minimum fused bona-fide probability required to pass PAD.",
+    )
     default_strategy: str = "both"  # both | detection_only | tracking_only
     cpu_cores: int = Field(
         0,
@@ -232,6 +250,13 @@ class Settings(BaseSettings):
             raise ValueError("max_arcface_threads must be at least 1")
         return v
 
+    @field_validator("pad_threshold")
+    @classmethod
+    def _validate_pad_threshold(cls, v: float) -> float:
+        if not 0.0 <= v <= 1.0:
+            raise ValueError("pad_threshold must be between 0 and 1")
+        return v
+
     @field_validator("max_stream_fps")
     @classmethod
     def _validate_max_stream_fps(cls, v: int) -> int:
@@ -282,8 +307,14 @@ def get_settings() -> Settings:
     become the default — env vars still override).
     """
     yaml_defaults = _load_yaml_config(CONFIG_YAML)
-    # Push YAML values into the env *only if the env var is not already set*
-    # — env vars must always win.
+    # configs/.env is the documented local file; root .env is used by Compose.
+    # Root values override configs/.env, while an existing process env wins both.
+    dotenv_defaults = dotenv_values(PROJECT_ROOT / "configs" / ".env")
+    dotenv_defaults.update(dotenv_values(PROJECT_ROOT / ".env"))
+    for key, val in dotenv_defaults.items():
+        if key and key not in os.environ and val is not None:
+            os.environ[key] = val
+    # Process environment values take precedence over both .env and YAML.
     for key, val in yaml_defaults.items():
         env_key = key.upper()
         if env_key not in os.environ and val is not None:

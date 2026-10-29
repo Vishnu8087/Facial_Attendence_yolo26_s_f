@@ -82,6 +82,10 @@ class TrackResult:
     liveness_confidence:
         Confidence score in ``[0, 1]`` from the liveness verifier, or
         ``None`` when liveness is not run.
+    pad_label:
+        Optional learned PAD class (``paper``, ``real``, or ``screen``).
+    pad_scores:
+        Optional PAD probabilities ordered as ``paper, real, screen``.
     strategy:
         Which strategy produced this row.
     """
@@ -93,6 +97,8 @@ class TrackResult:
     liveness_passed: Optional[bool]
     liveness_confidence: Optional[float]
     strategy: str
+    pad_label: Optional[str] = None
+    pad_scores: Optional[Tuple[float, float, float]] = None
 
     def __post_init__(self) -> None:
         # Coerce bbox to a clean tuple of ints for JSON-friendliness.
@@ -377,23 +383,27 @@ class AttendancePipeline:
                 embedding_index += 1
                 identity, sim = self._match(emb) if emb is not None else (None, 0.0)
             liveness_result = self._verify_liveness(
-                frame, track.landmarks, track.track_id
+                frame, track.landmarks, track.track_id, track.bbox
             )
             is_live = self._extract_is_live(liveness_result)
             confidence = self._extract_liveness_confidence(liveness_result)
+            pad_label, pad_scores = self._extract_pad_result(liveness_result)
+            attendance_allowed = is_live and pad_label not in {"paper", "screen"}
             tr = TrackResult(
                 track_id=int(track.track_id),
                 bbox=self._bbox_tuple(track.bbox),
-                identity=identity,
-                similarity=sim,
-                liveness_passed=is_live,
+                identity=identity if attendance_allowed else None,
+                similarity=sim if attendance_allowed else 0.0,
+                liveness_passed=attendance_allowed,
                 liveness_confidence=confidence,
                 strategy=strategy,
+                pad_label=pad_label,
+                pad_scores=pad_scores,
             )
             tracks.append(tr)
 
             # Recognition can run every frame, but attendance requires liveness.
-            if identity is not None and is_live:
+            if identity is not None and attendance_allowed:
                 self._try_log(
                     identity=identity,
                     similarity=sim,
@@ -492,9 +502,12 @@ class AttendancePipeline:
         annotated = np.asarray(frame).copy() if self.draw_annotations else np.asarray(frame)
 
         for tr in tracked:
-            liveness_result = self._verify_liveness(frame, tr.landmarks, tr.track_id)
+            liveness_result = self._verify_liveness(
+                frame, tr.landmarks, tr.track_id, tr.bbox
+            )
             is_live = self._extract_is_live(liveness_result)
             conf = self._extract_liveness_confidence(liveness_result)
+            pad_label, pad_scores = self._extract_pad_result(liveness_result)
             tracks.append(
                 TrackResult(
                     track_id=int(tr.track_id),
@@ -504,6 +517,8 @@ class AttendancePipeline:
                     liveness_passed=bool(is_live),
                     liveness_confidence=float(conf),
                     strategy=strategy,
+                    pad_label=pad_label,
+                    pad_scores=pad_scores,
                 )
             )
 
@@ -535,24 +550,30 @@ class AttendancePipeline:
 
         for tr, (identity, sim) in zip(tracked, identities):
             # ---- Liveness ----
-            liveness_result = self._verify_liveness(frame, tr.landmarks, tr.track_id)
+            liveness_result = self._verify_liveness(
+                frame, tr.landmarks, tr.track_id, tr.bbox
+            )
             is_live = self._extract_is_live(liveness_result)
             conf = self._extract_liveness_confidence(liveness_result)
+            pad_label, pad_scores = self._extract_pad_result(liveness_result)
+            attendance_allowed = is_live and pad_label not in {"paper", "screen"}
 
             tracks.append(
                 TrackResult(
                     track_id=int(tr.track_id),
                     bbox=self._bbox_tuple(tr.bbox),
-                    identity=identity,
-                    similarity=float(sim),
-                    liveness_passed=bool(is_live),
+                    identity=identity if attendance_allowed else None,
+                    similarity=float(sim) if attendance_allowed else 0.0,
+                    liveness_passed=bool(attendance_allowed),
                     liveness_confidence=float(conf),
                     strategy=strategy,
+                    pad_label=pad_label,
+                    pad_scores=pad_scores,
                 )
             )
 
             # ---- Log if all conditions met ----
-            if identity is not None and is_live:
+            if identity is not None and attendance_allowed:
                 self._try_log(
                     identity=identity,
                     similarity=sim,
@@ -708,14 +729,20 @@ class AttendancePipeline:
         frame: np.ndarray,
         landmarks: Optional[np.ndarray],
         track_id: Any,
+        bbox: Optional[np.ndarray] = None,
     ) -> Any:
         """Run the liveness verifier; never raises."""
-        if self.liveness is None or landmarks is None:
+        if self.liveness is None or (landmarks is None and bbox is None):
             return None
         try:
-            result = self.liveness.verify(frame, landmarks, track_id)
+            result = self.liveness.verify(
+                frame,
+                landmarks,
+                track_id,
+                bbox=bbox,
+            )
         except Exception as exc:
-            logger.debug("liveness.verify raised: %s", exc)
+            logger.warning("liveness.verify failed for track %s: %s", track_id, exc)
             return None
         with self._lock:
             self._track_liveness[track_id] = result
@@ -746,6 +773,31 @@ class AttendancePipeline:
                 getattr(liveness_result, "score", 0.0),
             )
         )
+
+    @staticmethod
+    def _extract_pad_result(
+        liveness_result: Any,
+    ) -> tuple[Optional[str], Optional[Tuple[float, float, float]]]:
+        """Return optional PAD class and class probabilities for the stream UI."""
+        if liveness_result is None:
+            return None, None
+        label = (
+            liveness_result.get("pad_label")
+            if isinstance(liveness_result, dict)
+            else getattr(liveness_result, "pad_label", None)
+        )
+        raw_scores = (
+            liveness_result.get("pad_scores")
+            if isinstance(liveness_result, dict)
+            else getattr(liveness_result, "pad_scores", None)
+        )
+        if raw_scores is None:
+            return str(label) if label is not None else None, None
+        scores = tuple(float(value) for value in raw_scores)
+        if len(scores) != 3:
+            logger.warning("invalid PAD score count: expected 3, received %d", len(scores))
+            return str(label) if label is not None else None, None
+        return str(label) if label is not None else None, scores
 
     # ------------------------------------------------------------------ #
     # Logging + cooldown
@@ -809,12 +861,17 @@ class AttendancePipeline:
         boxes = [t.bbox for t in tracks]
         labels = []
         for t in tracks:
+            if t.liveness_passed is False:
+                if t.pad_label in {"paper", "screen"}:
+                    labels.append(f"{t.pad_label.upper()} - ATTENDANCE BLOCKED")
+                elif t.pad_label is not None:
+                    labels.append(f"PAD REJECTED ({t.pad_label.upper()}) - BLOCKED")
+                else:
+                    labels.append("LIVENESS REJECTED - ATTENDANCE BLOCKED")
+                continue
+
             name = (t.identity or {}).get("name") or f"track={t.track_id}"
-            tag = (
-                "N/A"
-                if t.liveness_passed is None
-                else ("LIVE" if t.liveness_passed else "spoof?")
-            )
+            tag = f"PAD:{t.pad_label}" if t.pad_label is not None else "LIVE"
             labels.append(f"{name} sim={t.similarity:.2f} [{tag}]")
         return draw_boxes(frame, boxes, labels=labels)
 

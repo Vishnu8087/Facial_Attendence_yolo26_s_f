@@ -24,12 +24,13 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 import numpy as np
 from fastapi import WebSocket, WebSocketDisconnect
 
-from app.config import settings
+from app.config import PROJECT_ROOT, settings
 from app.db.session import get_session
 from app.services.attendance_logger import AttendanceLogger
 from app.utils.logging import get_logger
@@ -136,12 +137,26 @@ def _build_pipeline(
             for component in (cv_service.detector, cv_service.aligner, cv_service.extractor)
         ):
             raise RuntimeError("One or more face-processing components could not be initialized")
+        pad_model = None
+        if settings.pad_enabled:
+            from app.core.pad import MiniFASNetPad
+
+            model_dir = Path(settings.pad_model_dir)
+            if not model_dir.is_absolute():
+                model_dir = PROJECT_ROOT / model_dir
+            pad_model = MiniFASNetPad(
+                model_dir=model_dir,
+                threshold=settings.pad_threshold,
+            )
         return PipelineCls(
             detector=cv_service.detector,
             aligner=cv_service.aligner,
             extractor=cv_service.extractor,
             tracker=MotionTracker(),
-            liveness=LivenessVerifier(frame_rate=settings.max_stream_fps),
+            liveness=LivenessVerifier(
+                frame_rate=settings.max_stream_fps,
+                pad_model=pad_model,
+            ),
             matcher=matcher,
             cooldown_seconds=settings.cooldown_seconds,
             similarity_threshold=settings.similarity_threshold,
@@ -150,6 +165,10 @@ def _build_pipeline(
         )
     except Exception as exc:  # pragma: no cover
         logger.warning("stream.pipeline.build_failed", error=str(exc))
+        if settings.pad_enabled:
+            raise RuntimeError(
+                "PAD is enabled but its model or pipeline could not be initialized"
+            ) from exc
         return None
 
 
@@ -223,7 +242,7 @@ class StreamManager:
         if self._default_pipeline is None:
             logger.warning("stream.startup.pipeline_unavailable")
         else:
-            for name in ("detector", "extractor"):
+            for name in ("detector", "extractor", "liveness"):
                 component = getattr(self._default_pipeline, name, None)
                 warmup = getattr(component, "warmup", None)
                 if callable(warmup):
@@ -915,15 +934,29 @@ class StreamManager:
             similarity = getattr(tr, "similarity", None)
             liveness_passed = getattr(tr, "liveness_passed", None)
             liveness_confidence = getattr(tr, "liveness_confidence", None)
+            pad_label = getattr(tr, "pad_label", None)
             strategy = getattr(tr, "strategy", state.current_strategy)
+            attendance_allowed = (
+                liveness_passed is True
+                and pad_label not in {"paper", "screen"}
+            )
+            is_real = (
+                attendance_allowed
+                if liveness_passed is not None or pad_label in {"paper", "screen"}
+                else None
+            )
 
             det: dict[str, Any] = {
                 "bbox": [float(x) for x in bbox] if bbox is not None else None,
                 "score": float(score) if score is not None else None,
                 "track_id": int(track_id) if track_id is not None else None,
-                "is_real": liveness_passed if liveness_passed is not None else None,
+                "is_real": is_real,
+                "pad_label": pad_label,
             }
-            if identity is not None:
+            pad_scores = getattr(tr, "pad_scores", None)
+            if pad_scores is not None:
+                det["pad_scores"] = [float(value) for value in pad_scores]
+            if identity is not None and attendance_allowed:
                 emp_id = (
                     identity.get("employee_id")
                     if isinstance(identity, dict)
@@ -934,8 +967,8 @@ class StreamManager:
             detections.append(det)
 
             # Attendance must never be logged unless liveness explicitly passed.
-            if liveness_passed is not True:
-                if liveness_passed is False:
+            if not attendance_allowed:
+                if liveness_passed is False or pad_label in {"paper", "screen"}:
                     spoof_rejected_total.labels(strategy=strategy).inc()
                 continue
 

@@ -80,7 +80,7 @@ scaling considerations.
 | `aligner.py`          | Affine warp to 112×112 canonical crop                       | `frame + landmarks` → `np.ndarray 112x112x3`      |
 | `extractor.py`        | ArcFace 512-d embedding, L2-normalised                      | `112x112x3` → `np.ndarray (512,) float32`         |
 | `tracker.py`          | ByteTrack-style tracking with cooldown-based ID reset       | `List[Detection]` → `List[Track(track_id, bbox, landmarks)]` |
-| `liveness.py`         | EAR + blink counter + head-pose; static-frame rejection     | `landmarks` stream → `{is_real, ear, blink_count, head_pose, score}` |
+| `liveness.py`         | Landmark heuristics, or optional MiniFASNet PAD gate        | `frame + bbox` → `{is_real, score, pad_label, pad_scores}`            |
 | `pipeline.py`         | Orchestrates all of the above per `strategy`                | `frame + strategy` → `FrameResult`                |
 | `utils.py`            | `cosine_similarity`, `compute_ear`, `euler_from_landmarks`  | pure numpy helpers                                |
 
@@ -267,64 +267,43 @@ its liveness history while continuing to re-extract embeddings every frame.
 
 ## Anti-spoofing deep-dive
 
-The `LivenessVerifier` is a heuristic, zero-model anti-spoofing layer
-designed to reject:
+The default `LivenessVerifier` uses landmark-derived blink and motion
+heuristics. Five-point ArcFace landmarks contain eye centers rather than
+eyelid contours, so the current blink estimate is only a weak proxy; Euler
+angles and motion are also affected by camera movement. Do not treat this
+default heuristic as dependable protection against printed photos or screen
+replays.
 
-1. **Static photographs** held up to the camera.
-2. **Screen-replay** attacks (a phone playing a video of the target).
-3. **Printed masks** without eye articulation.
+An optional **MiniFASNet PAD** model is available for evaluation. It is
+disabled by default. Enable it only after downloading the pinned model files:
 
-It does **not** defend against high-quality 3D masks or real-time
-deepfake video replay — those require a learned anti-spoofing model
-(roadmap item, v0.2+).
-
-### Mechanism
-
-The verifier consumes a rolling window of 5-point landmarks per face
-track and computes:
-
-- **Eye-Aspect-Ratio (EAR)** per frame:
-
-  ```
-   p1 ─────── p2
-   │           │
-   p6         p3
-   │           │
-   p5 ─────── p4
-
-   EAR = (||p2-p6|| + ||p3-p5||) / (2 * ||p1-p4||)
-  ```
-
-  Drops below `LIVENESS_EAR_THRESHOLD` (default 0.20) ⇒ eyelid closed.
-
-- **Blink detection**: a blink = a frame where EAR < threshold
-  surrounded by frames where EAR ≥ threshold. The rolling window
-  (`LIVENESS_WINDOW_SECONDS`, default 5s) must contain ≥
-  `LIVENESS_MIN_BLINKS` (default 1) blinks.
-
-- **Head-pose (Euler angles)**: derived from the 5-point landmarks via
-  a PnP-like solve. A static photo cannot rotate; a small natural head
-  motion (yaw/pitch variance > 3° over the window) is required.
-
-- **Static-frame rejection**: if every frame in the window has
-  identical landmarks (within 0.5 px), the verifier short-circuits and
-  returns `is_real=False` regardless of blink count.
-
-### Score composition
-
-```
-score = 0.4 * blink_ok + 0.3 * pose_variance_ok + 0.3 * not_static
-is_real = score >= 0.6
+```powershell
+python scripts\download_pad_models.py
 ```
 
-### Bypass conditions
+Then configure `PAD_ENABLED=true` and `PAD_MODEL_DIR=models/pad`. The two
+80×80 ONNX models classify a face crop at two context scales (2.7× and 4×).
+Their softmax probabilities are averaged; class 1 is treated as bona fide,
+while classes 0 and 2 are treated as spoof. The fused bona-fide score must
+also meet `PAD_THRESHOLD`. The application uses the detector's face bounding
+box to create the model crops. When PAD is enabled, this model result controls
+the attendance liveness gate; Euler/blink heuristics do not override it.
 
-The `AttendancePipeline` consults `LivenessVerifier` in all strategies.
-`detection_only` still recognizes every frame, but attendance is gated on a
-positive liveness result so a static printed photo is not accepted solely
-because its identity matches. This heuristic verifier is not a certified
-presentation-attack detector; production deployments needing stronger spoof
-resistance should use a dedicated anti-spoof model and challenge-response.
+If PAD is enabled but a model is missing, invalid, or inference fails, the
+frame fails closed and cannot produce attendance. The model sessions are
+warmed during application startup. Without PAD enabled, the application
+continues using the existing heuristic behavior.
+
+The pretrained models are from [Silent-Face-Anti-Spoofing](https://github.com/minivision-ai/Silent-Face-Anti-Spoofing)
+and an Apache-2.0 ONNX conversion pinned in
+[`scripts/download_pad_models.py`](../scripts/download_pad_models.py). This
+is a practical baseline, not a security guarantee: performance depends on
+camera, lighting, face crop, and attack medium. Evaluate with separate,
+representative live, printed-photo, and screen-replay samples from the
+deployment camera. The notebook
+[`notebooks/pad_minifasnet_evaluation.ipynb`](../notebooks/pad_minifasnet_evaluation.ipynb)
+reports false accepts, false rejects, balanced accuracy, and latency. It does
+not certify the system or select a production threshold for you.
 
 ## Scaling considerations
 

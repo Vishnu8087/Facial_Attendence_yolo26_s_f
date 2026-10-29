@@ -52,12 +52,29 @@ def test_default_stream_pipeline_builds_with_configured_detector():
     assert pipeline.matcher is matcher
 
 
+def test_pad_enabled_pipeline_fails_if_model_files_are_missing(monkeypatch, tmp_path):
+    monkeypatch.setattr("app.services.stream_manager.settings.pad_enabled", True)
+    monkeypatch.setattr(
+        "app.services.stream_manager.settings.pad_model_dir",
+        str(tmp_path / "missing-pad-models"),
+    )
+    service = SimpleNamespace(
+        detector=object(),
+        aligner=object(),
+        extractor=object(),
+    )
+
+    with pytest.raises(RuntimeError, match="PAD is enabled"):
+        _build_pipeline(_EmployeeMatcher(), cv_service=service)
+
+
 @pytest.mark.asyncio
 async def test_startup_warms_detector_and_extractor(monkeypatch):
     warmed = []
     pipeline = SimpleNamespace(
         detector=SimpleNamespace(warmup=lambda: warmed.append("detector")),
         extractor=SimpleNamespace(warmup=lambda: warmed.append("extractor")),
+        liveness=SimpleNamespace(warmup=lambda: warmed.append("liveness")),
     )
     monkeypatch.setattr(
         "app.services.stream_manager._build_pipeline",
@@ -66,7 +83,7 @@ async def test_startup_warms_detector_and_extractor(monkeypatch):
 
     await StreamManager().startup()
 
-    assert warmed == ["detector", "extractor"]
+    assert warmed == ["detector", "extractor", "liveness"]
 
 
 @pytest.mark.asyncio
@@ -439,6 +456,8 @@ async def test_detection_only_identity_is_logged_after_liveness_passes(monkeypat
                 liveness_passed=True,
                 liveness_confidence=0.9,
                 strategy="detection_only",
+                pad_label="real",
+                pad_scores=(0.02, 0.96, 0.02),
             )
         ],
     )
@@ -447,6 +466,8 @@ async def test_detection_only_identity_is_logged_after_liveness_passes(monkeypat
     await asyncio.sleep(0)
 
     assert detections[0]["is_real"] is True
+    assert detections[0]["pad_label"] == "real"
+    assert detections[0]["pad_scores"] == pytest.approx([0.02, 0.96, 0.02])
     assert events[0]["employee_id"] == "employee-1"
     assert events[0]["liveness_passed"] is True
     assert logged[0]["liveness_passed"] is True
@@ -475,6 +496,37 @@ async def test_stream_does_not_log_identity_without_liveness_pass():
 
     _, _, events = manager._unpack_result(result, state)
 
+    assert events == []
+
+
+@pytest.mark.asyncio
+async def test_stream_hides_identity_and_blocks_attendance_for_pad_paper():
+    manager = StreamManager()
+    identity = {"employee_id": "employee-1", "name": "Test Employee"}
+    state = SimpleNamespace(current_strategy="both", effective_threshold=0.5)
+    result = SimpleNamespace(
+        annotated_frame=np.zeros((2, 2, 3), dtype=np.uint8),
+        tracks=[
+            SimpleNamespace(
+                bbox=(0, 0, 1, 1),
+                score=0.95,
+                track_id=1,
+                identity=identity,
+                similarity=0.95,
+                liveness_passed=True,
+                liveness_confidence=0.9,
+                strategy="both",
+                pad_label="paper",
+                pad_scores=(0.96, 0.02, 0.02),
+            )
+        ],
+    )
+
+    _, detections, events = manager._unpack_result(result, state)
+
+    assert detections[0]["is_real"] is False
+    assert detections[0]["pad_label"] == "paper"
+    assert "identity" not in detections[0]
     assert events == []
 
 

@@ -41,6 +41,11 @@ cv:
   liveness:
     enabled: true
     min_score: 0.5
+  # Optional learned presentation-attack detection; download weights with
+  # python scripts/download_pad_models.py before enabling.
+  pad_enabled: false
+  pad_model_dir: models/pad
+  pad_threshold: 0.5
   default_strategy: both    # both | detection_only | tracking_only
   cpu_cores: 0              # 0 = detect with os.cpu_count()
   arcface_threading: auto   # auto | true | false

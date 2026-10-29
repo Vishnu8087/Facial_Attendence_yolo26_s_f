@@ -102,6 +102,8 @@ frontend/.parcel-cache/
 # --- Jupyter ---
 .ipynb_checkpoints/
 *.ipynb
+!notebooks/pad_minifasnet_evaluation.ipynb
+!notebooks/face_recognition_pad_attendance.ipynb
 
 # --- Misc ---
 TODO.md

@@ -50,8 +50,9 @@ browser-based dashboard.
   PostgreSQL installations without the server extension.
 - **ByteTrack motion tracking** — persistent IDs across frames, no
   re-embedding needed while a track is alive.
-- **Anti-spoofing liveness** — Eye-Aspect-Ratio blink detection +
-  head-pose estimation; rejects static photos and screen-replay attacks.
+- **Liveness / presentation-attack detection** — landmark blink/motion
+  heuristics by default, with an opt-in two-scale MiniFASNet model for
+  testing printed-photo and screen-replay detection.
 - **Cooldown duplicate-suppression** — the same identity is logged at
   most once per `ATTENDANCE_COOLDOWN_SECONDS` (default 30s).
 - **WebSocket streaming** — push JPEG frames, get back annotated frames
@@ -124,6 +125,22 @@ accepts a `strategy` argument with three modes:
 `detection_only` still re-detects and re-extracts every frame, but uses temporary
 track IDs to accumulate liveness evidence. Attendance is logged only after a
 matched identity passes liveness and the cooldown allows it.
+
+The default liveness heuristic is not a reliable photo-spoof defense.
+To test the optional MiniFASNet PAD model, run
+`python scripts/download_pad_models.py`, then set `PAD_ENABLED=true` and
+`PAD_MODEL_DIR=models/pad` before starting the server. With PAD enabled,
+its learned paper/real/screen classification—not the Euler-angle/blink
+heuristics—controls the attendance liveness gate. If either model is missing
+or inference fails, attendance fails closed. See
+[`docs/PAD_TESTING.md`](docs/PAD_TESTING.md) and the standalone
+[`notebooks/face_recognition_pad_attendance.ipynb`](notebooks/face_recognition_pad_attendance.ipynb)
+for the complete Colab/Kaggle detection + ArcFace + PAD + attendance-CSV test
+workflow, including Drive folders and Colab camera capture. A separate
+[`notebooks/pad_minifasnet_evaluation.ipynb`](notebooks/pad_minifasnet_evaluation.ipynb)
+is available for PAD-only image scoring. Validate the threshold and model
+with representative live and spoof samples from the actual camera before
+relying on it; a passing notebook score is not a security guarantee.
 
 ```
 Strategy "detection_only":
@@ -283,6 +300,9 @@ All runtime config is driven by environment variables (see
 | `LIVENESS_EAR_THRESHOLD`       | `0.20`         | Eye-Aspect-Ratio blink threshold                  |
 | `LIVENESS_MIN_BLINKS`          | `1`            | Min blinks in the rolling window to pass          |
 | `LIVENESS_WINDOW_SECONDS`      | `5`            | Rolling window for blink counting                 |
+| `PAD_ENABLED`                   | `false`        | Use the MiniFASNet learned PAD gate               |
+| `PAD_MODEL_DIR`                 | `models/pad`   | Directory containing both verified ONNX models   |
+| `PAD_THRESHOLD`                 | `0.5`          | Minimum fused live-class score to pass PAD        |
 | `MAX_STREAM_FPS`               | `30`           | Server-side rate cap on the WebSocket             |
 | `CPU_CORES`                    | `0`            | Logical CPU count override; `0` uses `os.cpu_count()` |
 | `ARCFACE_THREADING`             | `auto`         | Per-face ArcFace threading (`auto`, `true`, `false`) |

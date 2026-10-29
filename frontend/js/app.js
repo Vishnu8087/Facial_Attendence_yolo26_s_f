@@ -1564,7 +1564,7 @@
           Stats.update({
             fps: Number.isFinite(streamFps) ? streamFps : null,
             faces_detected: detections.length,
-            identities_recognized: detections.filter((d) => d && d.identity).length,
+            identities_recognized: detections.filter((d) => d && d.identity && d.is_real === true).length,
             spoof_rejected: detections.filter((d) => d && d.is_real === false).length,
           });
           break;

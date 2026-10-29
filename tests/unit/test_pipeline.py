@@ -12,6 +12,8 @@ from unittest.mock import MagicMock
 import numpy as np
 import pytest
 
+from app.core.liveness import LivenessVerifier
+
 _pipeline_mod = pytest.importorskip("app.core.pipeline", reason="Task 1-a not yet merged")
 AttendancePipeline = _pipeline_mod.AttendancePipeline  # type: ignore[attr-defined]
 
@@ -52,6 +54,62 @@ def test_strategy_detection_only_tracks_faces_for_liveness(
     # Extractor SHOULD have been called for each detection
     assert mock_extractor.extract.call_count >= 1
     assert result is not None
+
+
+def test_pad_liveness_receives_bbox_even_without_landmarks(
+    sample_frame, mock_detector, mock_extractor, mock_tracker, mock_liveness
+):
+    pipe = _build_pipeline(mock_detector, mock_extractor, mock_tracker, mock_liveness)
+    bbox = np.asarray([10, 20, 90, 100], dtype=np.float32)
+
+    pipe._verify_liveness(sample_frame, None, 4, bbox)
+
+    mock_liveness.verify.assert_called_once_with(
+        sample_frame,
+        None,
+        4,
+        bbox=bbox,
+    )
+
+
+def test_pipeline_includes_pad_result_in_track(sample_frame):
+    class FakePad:
+        def predict(self, _frame, _bbox):
+            return {
+                "is_real": False,
+                "label": "paper",
+                "score": 0.02,
+                "scores": np.asarray([0.96, 0.02, 0.02]),
+            }
+
+    liveness = LivenessVerifier(pad_model=FakePad())
+    track = SimpleNamespace(
+        track_id=7,
+        bbox=np.asarray([20, 20, 100, 100], dtype=np.float32),
+        landmarks=None,
+        score=0.9,
+    )
+    tracker = MagicMock()
+    tracker.update.return_value = [track]
+    pipe = AttendancePipeline(
+        detector=MagicMock(),
+        aligner=MagicMock(),
+        extractor=MagicMock(),
+        tracker=tracker,
+        liveness=liveness,
+        draw_annotations=False,
+    )
+    pipe.aligner.align.return_value = np.zeros((112, 112, 3), dtype=np.uint8)
+    pipe.extractor.extract.return_value = np.ones(512, dtype=np.float32)
+
+    result = pipe.process_frame(
+        sample_frame,
+        strategy="detection_only",
+        detections=[SimpleNamespace(bbox=track.bbox, score=0.9, landmarks=None)],
+    )
+
+    assert result.tracks[0].pad_label == "paper"
+    assert result.tracks[0].pad_scores == pytest.approx((0.96, 0.02, 0.02))
 
 
 def test_detection_only_batches_face_embeddings_and_requires_liveness_for_attendance(
@@ -124,9 +182,47 @@ def test_detection_only_does_not_log_identity_when_liveness_fails(
 
     result = pipe.process_frame(sample_frame, strategy="detection_only")
 
-    assert all(track.identity == identity for track in result.tracks)
+    assert all(track.identity is None for track in result.tracks)
     assert all(track.liveness_passed is False for track in result.tracks)
     logger.log_attendance.assert_not_called()
+
+
+def test_pad_rejection_annotation_hides_identity_and_marks_paper_blocked(sample_frame, monkeypatch):
+    from app.core import utils as utils_module
+
+    captured = {}
+
+    def fake_draw_boxes(frame, boxes, labels):
+        captured["labels"] = labels
+        return frame
+
+    monkeypatch.setattr(utils_module, "draw_boxes", fake_draw_boxes)
+    pipe = AttendancePipeline(
+        detector=MagicMock(),
+        aligner=MagicMock(),
+        extractor=MagicMock(),
+        tracker=MagicMock(),
+        liveness=MagicMock(),
+    )
+    pipe._annotate(
+        sample_frame.copy(),
+        [
+            _pipeline_mod.TrackResult(
+                track_id=1,
+                bbox=(1, 2, 30, 40),
+                identity=None,
+                similarity=0.0,
+                liveness_passed=False,
+                liveness_confidence=0.1,
+                strategy="both",
+                pad_label="paper",
+                pad_scores=(0.96, 0.02, 0.02),
+            )
+        ],
+        "both",
+    )
+
+    assert captured["labels"] == ["PAPER - ATTENDANCE BLOCKED"]
 
 
 def test_strategy_tracking_only_skips_extraction(
