@@ -13,7 +13,7 @@ pytest-xdist==3.6.1
 httpx==0.28.1                  # already in base but used as test client too
 respx==0.21.1                  # httpx mocking
 freezegun==1.5.1               # time mocking
-hypothesis==6.122.1            # property-based tests
+hypothesis==6.170.14            # property-based tests
 
 # --- Lint / format / types ---
 ruff==0.8.2
