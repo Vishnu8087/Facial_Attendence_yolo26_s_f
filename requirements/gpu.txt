@@ -14,7 +14,7 @@ onnxruntime-gpu==1.20.1
 # Pulled from the pytorch index; constraint added here for reproducibility.
 # Ultralytics YOLO26 (used when DETECTOR_BACKEND=yolo26) requires torch>=2.1.
 torch==2.5.1
-torchvision==0.20.1
+torchvision==0.29.2
 --extra-index-url https://download.pytorch.org/whl/cu121
 
 # OpenCV uses the standard CPU wheel required by Ultralytics. GPU inference is
