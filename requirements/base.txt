@@ -9,7 +9,7 @@ python-multipart==0.0.17
 websockets==13.1
 
 # --- Settings & validation ---
-pydantic==2.10.3
+pydantic==2.14.2
 pydantic-settings==2.6.1
 
 # --- Database ---
