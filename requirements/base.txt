@@ -19,7 +19,7 @@ alembic==1.14.0
 pgvector==0.3.6
 
 # --- CV / ML ---
-numpy==1.26.4                  # pinned: insightface + onnxruntime compatibility
+numpy==2.5.4                  # pinned: insightface + onnxruntime compatibility
 opencv-python==4.10.0.84
 scikit-learn==1.5.2
 insightface==0.7.3
