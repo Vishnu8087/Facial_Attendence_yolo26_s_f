@@ -76,7 +76,7 @@ jobs:
             type=oci,dest=/tmp/image-${{ matrix.variant }}.tar
 
       - name: Upload image tarball for security scan
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: docker-image-${{ matrix.variant }}
           path: /tmp/image-${{ matrix.variant }}.tar
